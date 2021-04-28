@@ -97,26 +97,11 @@ location /t {
         local code, body = t('/apisix/admin/schema/ssl',
             ngx.HTTP_GET,
             nil,
-<<<<<<< HEAD
-            {
-                type = "object",
-                properties = {
-                    cert = {
-                        type = "string", minLength = 128, maxLength = 64*1024
-                    },
-                    key = {
-                        type = "string", minLength = 128, maxLength = 64*1024
-                    },
-                    sni = {
-                        type = "string",
-                        pattern = [[^\*?[0-9a-zA-Z-.]+$]],
-                    }
-                },
-                required = {"sni", "key", "cert"},
-                additionalProperties = false,
-            }
-=======
             ssl
+<<<<<<< HEAD
+                        type = "string", minLength = 128, maxLength = 4096
+                        type = "string", minLength = 128, maxLength = 4096
+=======
 >>>>>>> e0c817dfc8610492b4051a9d3ffde5246686928e
             )
 
