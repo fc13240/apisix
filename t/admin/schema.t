@@ -98,8 +98,6 @@ location /t {
             ngx.HTTP_GET,
             nil,
             ssl
-                        type = "string", minLength = 128, maxLength = 4096
-                        type = "string", minLength = 128, maxLength = 4096
             )
 
         ngx.status = code
