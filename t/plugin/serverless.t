@@ -1,3 +1,19 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 use t::APISIX 'no_plan';
 
 repeat_each(1);
@@ -12,18 +28,19 @@ __DATA__
     location /t {
         content_by_lua_block {
             local plugin = require("apisix.plugins.serverless-pre-function")
-            local ok, err = plugin.check_schema({functions = {"return function() ngx.log(ngx.ERR, 'serverless post function'); ngx.exit(201); end"}})
+            local schema =  {functions = {"return function() ngx.log(ngx.ERR, 'serverless post function'); ngx.exit(201); end"}}
+            local ok, err = plugin.check_schema(schema)
             if not ok then
                 ngx.say(err)
             end
 
-            ngx.say("done")
+            ngx.say(schema.phase)
         }
     }
 --- request
 GET /t
 --- response_body
-done
+access
 --- no_error_log
 [error]
 
@@ -89,7 +106,7 @@ done
 --- request
 GET /t
 --- response_body
-invalid "enum" in docuement at pointer "#/phase"
+property "phase" validation failed: matches none of the enum values
 done
 --- no_error_log
 [error]
@@ -552,3 +569,113 @@ passed
 GET /hello
 --- error_log
 serverless pre function:2
+
+
+
+=== TEST 19: http -> https redirect
+--- config
+    location /t {
+        content_by_lua_block {
+            local t = require("lib.test_admin").test
+            local code, body = t('/apisix/admin/routes/1',
+                 ngx.HTTP_PUT,
+                 [[{
+                    "plugins": {
+                        "serverless-pre-function": {
+                            "functions" : ["return function() if ngx.var.scheme == \"http\" and ngx.var.host == \"foo.com\" then ngx.header[\"Location\"] = \"https://foo.com\" .. ngx.var.request_uri; ngx.exit(ngx.HTTP_MOVED_PERMANENTLY); end; end"]
+                        }
+                    },
+                    "uri": "/hello"
+                }]],
+                [[{
+                    "node": {
+                        "value": {
+                            "plugins": {
+                                "serverless-pre-function": {
+                                    "functions" : ["return function() if ngx.var.scheme == \"http\" and ngx.var.host == \"foo.com\" then ngx.header[\"Location\"] = \"https://foo.com\" .. ngx.var.request_uri; ngx.exit(ngx.HTTP_MOVED_PERMANENTLY); end; end"]
+                                }
+                            },
+                            "uri": "/hello"
+                        },
+                        "key": "/apisix/routes/1"
+                    },
+                    "action": "set"
+                }]]
+                )
+
+            if code >= 300 then
+                ngx.status = code
+            end
+            ngx.say(body)
+        }
+    }
+--- request
+GET /t
+--- more_headers
+Host: foo.com
+--- response_body
+passed
+--- no_error_log
+[error]
+
+
+
+=== TEST 20: check plugin
+--- request
+GET /hello
+--- more_headers
+Host: foo.com
+--- error_code: 301
+--- response_headers
+Location: https://foo.com/hello
+
+
+
+=== TEST 21: access conf & ctx in serverless
+--- config
+    location /t {
+        content_by_lua_block {
+            local t = require("lib.test_admin").test
+            local code, body = t('/apisix/admin/routes/1',
+                 ngx.HTTP_PUT,
+                 [[{
+                    "plugins": {
+                        "serverless-post-function": {
+                        "functions" : ["return function(conf, ctx) ngx.log(ngx.WARN, 'default phase: ', conf.phase);
+                                       ngx.log(ngx.WARN, 'match uri ', ctx.curr_req_matched and ctx.curr_req_matched._path);
+                                       ctx.var.upstream_uri = '/server_port' end"]
+                        }
+                    },
+                    "upstream": {
+                        "nodes": {
+                            "127.0.0.1:1980": 1
+                        },
+                        "type": "roundrobin"
+                    },
+                    "uri": "/hello"
+                }]]
+                )
+
+            if code >= 300 then
+                ngx.status = code
+            end
+            ngx.say(body)
+        }
+    }
+--- request
+GET /t
+--- response_body
+passed
+--- no_error_log
+[error]
+
+
+
+=== TEST 22: check plugin
+--- request
+GET /hello
+--- response_body chomp
+1980
+--- error_log
+default phase: access
+match uri /hello

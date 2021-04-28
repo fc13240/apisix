@@ -1,9 +1,27 @@
 #!/bin/sh
 
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
 set -ex
 
 OR_EXEC=`which openresty 2>&1`
 echo $OR_EXEC
+APISIX_VER="https://raw.githubusercontent.com/apache/apisix/master/rockspec/apisix-master-0.rockspec"
 
 # check the openresty exist
 CHECK_OR_EXIST=`echo $OR_EXEC | grep ": no openresty" | wc -l`
@@ -24,24 +42,29 @@ echo $UNAME
 
 
 do_install() {
-    if [ "$UNAME" == "Darwin" ]; then
-        luarocks install --lua-dir=$LUA_JIT_DIR apisix --tree=/usr/local/apisix/deps --local
+    i=0
+    while true; do
+        if [ "$i" = "10" ]; then
+            echo "failed to install in time"
+            cat build.log && exit 1
+            exit 1
+        fi
+        if [ "$LUAROCKS_VER" = 'luarocks 3.' ]; then
+            sudo luarocks install --lua-dir=$LUA_JIT_DIR $APISIX_VER --tree=/usr/local/apisix/deps --local > build.log 2>&1 && break
+        else
+            sudo luarocks install $APISIX_VER --tree=/usr/local/apisix/deps --local > build.log 2>&1 && break
+        fi
+        i=$(( i + 1 ))
+    done
 
-    elif [ "$LUAROCKS_VER" == 'luarocks 3.' ]; then
-        luarocks install --lua-dir=$LUA_JIT_DIR apisix --tree=/usr/local/apisix/deps --local
-
-    else
-        luarocks install apisix --tree=/usr/local/apisix/deps --local
-    fi
-
-    sudo rm -f /usr/local/bin/apisix
-    sudo ln -s /usr/local/apisix/deps/bin/apisix /usr/local/bin/apisix
+    sudo rm -f /usr/bin/apisix
+    sudo ln -s /usr/local/apisix/deps/bin/apisix /usr/bin/apisix
 }
 
 
 do_remove() {
-    sudo rm -f /usr/local/bin/apisix
-    luarocks purge /usr/local/apisix/deps --tree=/usr/local/apisix/deps
+    sudo rm -f /usr/bin/apisix
+    sudo luarocks purge --tree /usr/local/apisix/deps
 }
 
 

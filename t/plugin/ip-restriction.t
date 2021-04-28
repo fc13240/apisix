@@ -1,3 +1,19 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 BEGIN {
     if ($ENV{TEST_NGINX_CHECK_LEAK}) {
         $SkipReason = "unavailable for the hup tests";
@@ -35,13 +51,13 @@ __DATA__
                 ngx.say(err)
             end
 
-            ngx.say(require("cjson").encode(conf))
+            ngx.say(require("toolkit.json").encode(conf))
         }
     }
 --- request
 GET /t
 --- response_body
-{"whitelist":["10.255.254.0\/24","192.168.0.0\/16"]}
+{"whitelist":["10.255.254.0/24","192.168.0.0/16"]}
 --- no_error_log
 [error]
 
@@ -61,15 +77,16 @@ GET /t
             local ok, err = plugin.check_schema(conf)
             if not ok then
                 ngx.say(err)
+                return
             end
 
-            ngx.say(require("cjson").encode(conf))
+            ngx.say(require("toolkit.json").encode(conf))
         }
     }
 --- request
 GET /t
 --- response_body_like eval
-qr/invalid ip address: 10.255.256.0\/24/
+qr/value should match only one schema, but matches none/
 --- no_error_log
 [error]
 
@@ -89,15 +106,16 @@ qr/invalid ip address: 10.255.256.0\/24/
             local ok, err = plugin.check_schema(conf)
             if not ok then
                 ngx.say(err)
+                return
             end
 
-            ngx.say(require("cjson").encode(conf))
+            ngx.say(require("toolkit.json").encode(conf))
         }
     }
 --- request
 GET /t
 --- response_body_like eval
-qr@invalid ip address: 10.255.254.0/38@
+qr/value should match only one schema, but matches none/
 --- no_error_log
 [error]
 
@@ -120,7 +138,7 @@ qr@invalid ip address: 10.255.254.0/38@
 --- request
 GET /t
 --- response_body
-invalid "oneOf" in docuement at pointer "#"
+value should match only one schema, but matches none
 done
 --- no_error_log
 [error]
@@ -144,7 +162,7 @@ done
 --- request
 GET /t
 --- response_body
-invalid "type" in docuement at pointer "#/blacklist"
+value should match only one schema, but matches none
 done
 --- no_error_log
 [error]
@@ -167,7 +185,7 @@ done
 --- request
 GET /t
 --- response_body
-invalid "oneOf" in docuement at pointer "#"
+value should match only one schema, but matches none
 done
 --- no_error_log
 [error]
@@ -251,12 +269,14 @@ GET /hello
 --- error_code: 403
 --- response_body
 {"message":"Your IP address is not allowed"}
+--- error_log
+ip-restriction exits with http status code 403
 --- no_error_log
 [error]
 
 
 
-=== TEST 11: hit route and IPv6 not not in the whitelist
+=== TEST 11: hit route and IPv6 not in the whitelist
 --- http_config
 set_real_ip_from 127.0.0.1;
 real_ip_header X-Forwarded-For;
@@ -340,7 +360,7 @@ GET /hello
 
 
 
-=== TEST 15: hit route and ip not not in the blacklist
+=== TEST 15: hit route and ip not in the blacklist
 --- http_config
 set_real_ip_from 127.0.0.1;
 real_ip_header X-Forwarded-For;
@@ -355,7 +375,7 @@ hello world
 
 
 
-=== TEST 16: hit route and IPv6 not not in the blacklist
+=== TEST 16: hit route and IPv6 not in the blacklist
 --- http_config
 set_real_ip_from 127.0.0.1;
 real_ip_header X-Forwarded-For;
@@ -549,6 +569,41 @@ GET /hello
 GET /t
 --- response_body
 invalid ip address: ::1/129
-invalid "anyOf" in docuement at pointer "#/whitelist/0"
+value should match only one schema, but matches none
+--- no_error_log
+[error]
+
+
+
+=== TEST 25: set disable=true
+--- config
+    location /t {
+        content_by_lua_block {
+            local t = require("lib.test_admin").test
+            local code, body = t('/apisix/admin/routes/1',
+                ngx.HTTP_PUT,
+                [[{
+                    "uri": "/hello",
+                    "plugins": {
+                        "ip-restriction": {
+                            "blacklist": [
+                                "127.0.0.0/24"
+                            ],
+                            "disable": true
+                        }
+                    }
+                }]]
+                )
+
+            if code >= 300 then
+                ngx.status = code
+            end
+            ngx.say(body)
+        }
+    }
+--- request
+GET /t
+--- response_body
+passed
 --- no_error_log
 [error]
