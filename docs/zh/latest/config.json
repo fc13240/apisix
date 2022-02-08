@@ -1,5 +1,5 @@
 {
-  "version": 2.5,
+  "version": "2.12.0",
   "sidebar": [
     {
       "type": "category",
@@ -20,6 +20,10 @@
     },
     {
       "type": "doc",
+      "id": "getting-started"
+    },
+    {
+      "type": "doc",
       "id": "how-to-build"
     },
     {
@@ -31,10 +35,13 @@
           "label": "General",
           "items": [
             "plugins/batch-requests",
-            "plugins/serverless",
             "plugins/redirect",
             "plugins/echo",
-            "plugins/server-info"
+            "plugins/gzip",
+            "plugins/real-ip",
+            "plugins/server-info",
+            "plugins/ext-plugin-post-req",
+            "plugins/ext-plugin-pre-req"
           ]
         },
         {
@@ -44,6 +51,7 @@
             "plugins/response-rewrite",
             "plugins/proxy-rewrite",
             "plugins/grpc-transcode",
+            "plugins/grpc-web",
             "plugins/fault-injection"
           ]
         },
@@ -57,7 +65,8 @@
             "plugins/jwt-auth",
             "plugins/basic-auth",
             "plugins/openid-connect",
-            "plugins/hmac-auth"
+            "plugins/hmac-auth",
+            "plugins/authz-casbin"
           ]
         },
         {
@@ -67,8 +76,10 @@
             "plugins/cors",
             "plugins/uri-blocker",
             "plugins/ip-restriction",
+            "plugins/ua-restriction",
             "plugins/referer-restriction",
-            "plugins/consumer-restriction"
+            "plugins/consumer-restriction",
+            "plugins/csrf"
           ]
         },
         {
@@ -83,7 +94,8 @@
             "plugins/proxy-mirror",
             "plugins/api-breaker",
             "plugins/traffic-split",
-            "plugins/request-id"
+            "plugins/request-id",
+            "plugins/client-control"
           ]
         },
         {
@@ -93,6 +105,7 @@
             "plugins/prometheus",
             "plugins/zipkin",
             "plugins/skywalking",
+            "plugins/opentelemetry",
             "plugins/node-status"
           ]
         },
@@ -101,13 +114,25 @@
           "label": "Loggers",
           "items": [
             "plugins/http-logger",
+            "plugins/skywalking-logger",
             "plugins/tcp-logger",
             "plugins/kafka-logger",
+            "plugins/rocketmq-logger",
             "plugins/udp-logger",
             "plugins/syslog",
             "plugins/log-rotate",
             "plugins/error-log-logger",
-            "plugins/sls-logger"
+            "plugins/sls-logger",
+            "plugins/google-cloud-logging",
+            "plugins/splunk-hec-logging",
+            "plugins/file-logger"
+          ]
+        },
+        {
+          "type": "category",
+          "label": "Serverless",
+          "items": [
+            "plugins/serverless"
           ]
         },
         {
@@ -143,6 +168,20 @@
       "label": "Others",
       "items": [
         {
+          "type": "category",
+          "label": "Discovery",
+          "items": [
+            "discovery",
+            "discovery/dns",
+            "discovery/nacos",
+            "discovery/eureka"
+          ]
+        },
+        {
+          "type": "doc",
+          "id": "external-plugin"
+        },
+        {
           "type": "doc",
           "id": "health-check"
         },
@@ -168,7 +207,7 @@
         },
         {
           "type": "doc",
-          "id": "https"
+          "id": "certificate"
         },
         {
           "type": "doc",
@@ -184,11 +223,23 @@
         },
         {
           "type": "doc",
+          "id": "plugin-develop"
+        },
+        {
+          "type": "doc",
           "id": "CODE_STYLE"
         },
         {
           "type": "doc",
+          "id": "mtls"
+        },
+        {
+          "type": "doc",
           "id": "debug-function"
+        },
+        {
+          "type": "doc",
+          "id": "profile"
         }
       ]
     },

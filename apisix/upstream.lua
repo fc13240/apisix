@@ -19,10 +19,12 @@ local core = require("apisix.core")
 local discovery = require("apisix.discovery.init").discovery
 local upstream_util = require("apisix.utils.upstream")
 local apisix_ssl = require("apisix.ssl")
+local balancer = require("ngx.balancer")
 local error = error
 local tostring = tostring
 local ipairs = ipairs
 local pairs = pairs
+local ngx_var = ngx.var
 local is_http = ngx.config.subsystem == "http"
 local upstreams
 local healthcheck
@@ -34,9 +36,22 @@ if ok then
     set_upstream_tls_client_param = apisix_ngx_upstream.set_cert_and_key
 else
     set_upstream_tls_client_param = function ()
-        return nil, "need to build APISIX-Openresty to support upstream mTLS"
+        return nil, "need to build APISIX-OpenResty to support upstream mTLS"
     end
 end
+
+local set_stream_upstream_tls
+if not is_http then
+    local ok, apisix_ngx_stream_upstream = pcall(require, "resty.apisix.stream.upstream")
+    if ok then
+        set_stream_upstream_tls = apisix_ngx_stream_upstream.set_tls
+    else
+        set_stream_upstream_tls = function ()
+            return nil, "need to build APISIX-OpenResty to support TLS over TCP upstream"
+        end
+    end
+end
+
 
 
 local HTTP_CODE_UPSTREAM_UNAVAILABLE = 503
@@ -110,8 +125,12 @@ local function create_checker(upstream)
 
     local host = upstream.checks and upstream.checks.active and upstream.checks.active.host
     local port = upstream.checks and upstream.checks.active and upstream.checks.active.port
+    local up_hdr = upstream.pass_host == "rewrite" and upstream.upstream_host
+    local use_node_hdr = upstream.pass_host == "node"
     for _, node in ipairs(upstream.nodes) do
-        local ok, err = checker:add_target(node.host, port or node.port, host)
+        local host_hdr = up_hdr or (use_node_hdr and node.domain)
+        local ok, err = checker:add_target(node.host, port or node.port, host,
+                                           true, host_hdr)
         if not ok then
             core.log.error("failed to add new health check target: ", node.host, ":",
                     port or node.port, " err: ", err)
@@ -214,37 +233,42 @@ end
 
 function _M.set_by_route(route, api_ctx)
     if api_ctx.upstream_conf then
-        core.log.warn("upstream node has been specified, ",
-                      "cannot be set repeatedly")
+        -- upstream_conf has been set by traffic-split plugin
         return
     end
 
     local up_conf = api_ctx.matched_upstream
     if not up_conf then
-        return 500, "missing upstream configuration in Route or Service"
+        return 503, "missing upstream configuration in Route or Service"
     end
     -- core.log.info("up_conf: ", core.json.delay_encode(up_conf, true))
 
     if up_conf.service_name then
         if not discovery then
-            return 500, "discovery is uninitialized"
+            return 503, "discovery is uninitialized"
         end
         if not up_conf.discovery_type then
-            return 500, "discovery server need appoint"
+            return 503, "discovery server need appoint"
         end
 
         local dis = discovery[up_conf.discovery_type]
         if not dis then
-            return 500, "discovery " .. up_conf.discovery_type .. " is uninitialized"
+            local err = "discovery " .. up_conf.discovery_type .. " is uninitialized"
+            return 503, err
         end
 
-        local new_nodes, err = dis.nodes(up_conf.service_name)
+        local new_nodes, err = dis.nodes(up_conf.service_name, up_conf.discovery_args)
         if not new_nodes then
             return HTTP_CODE_UPSTREAM_UNAVAILABLE, "no valid upstream node: " .. (err or "nil")
         end
 
         local same = upstream_util.compare_upstream_node(up_conf, new_nodes)
         if not same then
+            local pass, err = core.schema.check(core.schema.discovery_nodes, new_nodes)
+            if not pass then
+                return HTTP_CODE_UPSTREAM_UNAVAILABLE, "invalid nodes format: " .. err
+            end
+
             up_conf.nodes = new_nodes
             local new_up_conf = core.table.clone(up_conf)
             core.log.info("discover new upstream from ", up_conf.service_name, ", type ",
@@ -263,7 +287,7 @@ function _M.set_by_route(route, api_ctx)
     end
 
     set_directly(api_ctx, up_conf.type .. "#upstream_" .. tostring(up_conf),
-                 api_ctx.conf_version, up_conf)
+                 tostring(up_conf), up_conf)
 
     local nodes_count = up_conf.nodes and #up_conf.nodes or 0
     if nodes_count == 0 then
@@ -274,6 +298,19 @@ function _M.set_by_route(route, api_ctx)
         local ok, err = fill_node_info(up_conf, nil, true)
         if not ok then
             return 503, err
+        end
+
+        local scheme = up_conf.scheme
+        if scheme == "tls" then
+            local ok, err = set_stream_upstream_tls()
+            if not ok then
+                return 503, err
+            end
+
+            local sni = apisix_ssl.server_name()
+            if sni then
+                ngx_var.upstream_sni = sni
+            end
         end
 
         return
@@ -385,7 +422,7 @@ local function check_upstream_conf(in_dp, conf)
     end
 
     if conf.pass_host == "node" and conf.nodes and
-        core.table.nkeys(conf.nodes) ~= 1
+        not balancer.recreate_request and core.table.nkeys(conf.nodes) ~= 1
     then
         return false, "only support single node for `node` mode currently"
     end
@@ -440,6 +477,11 @@ local function filter_upstream(value, parent)
     end
 
     value.parent = parent
+
+    if not is_http and value.scheme == "http" then
+        -- For L4 proxy, the default scheme is "tcp"
+        value.scheme = "tcp"
+    end
 
     if not value.nodes then
         return

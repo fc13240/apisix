@@ -53,7 +53,7 @@ local function parse_graphql(ctx)
 
     local body, err = request.get_body(max_size, ctx)
     if not body then
-        return nil, "failed to read graphql body: " .. err
+        return nil, "failed to read graphql body: " .. (err or "request body has zero size")
     end
 
     local ok, res = pcall(gq_parse, body)
@@ -69,7 +69,8 @@ local function parse_graphql(ctx)
 end
 
 
-local function get_parsed_graphql(ctx)
+local function get_parsed_graphql()
+    local ctx = ngx.ctx.api_ctx
     if ctx._graphql then
         return ctx._graphql
     end
@@ -111,7 +112,17 @@ end
 do
     local var_methods = {
         method = ngx.req.get_method,
-        cookie = function () return ck:new() end
+        cookie = function ()
+            if ngx.var.http_cookie then
+                return ck:new()
+            end
+        end
+    }
+
+    local no_cacheable_var_names = {
+        -- var.args should not be cached as it can be changed via set_uri_args
+        args = true,
+        is_args = true,
     }
 
     local ngx_var_names = {
@@ -128,6 +139,20 @@ do
         upstream_no_cache          = true,
         upstream_cache_key         = true,
         upstream_cache_bypass      = true,
+
+        var_x_forwarded_proto = true,
+    }
+
+    -- sort in alphabetical
+    local apisix_var_names = {
+        balancer_ip = true,
+        balancer_port = true,
+        consumer_name = true,
+        mqtt_client_id = true,
+        route_id = true,
+        route_name = true,
+        service_id = true,
+        service_name = true,
     }
 
     local mt = {
@@ -151,9 +176,34 @@ do
                 if cookie then
                     local err
                     val, err = cookie:get(sub_str(key, 8))
-                    if not val then
+                    if err then
                         log.warn("failed to fetch cookie value by key: ",
                                  key, " error: ", err)
+                    end
+                end
+
+            elseif core_str.has_prefix(key, "arg_") then
+                local arg_key = sub_str(key, 5)
+                local args = request.get_uri_args()[arg_key]
+                if args then
+                    if type(args) == "table" then
+                        val = args[1]
+                    else
+                        val = args
+                    end
+                end
+
+            elseif core_str.has_prefix(key, "post_arg_") then
+                -- only match default post form
+                if request.header(nil, "Content-Type") == "application/x-www-form-urlencoded" then
+                    local arg_key = sub_str(key, 10)
+                    local args = request.get_post_args()[arg_key]
+                    if args then
+                        if type(args) == "table" then
+                            val = args[1]
+                        else
+                            val = args
+                        end
                     end
                 end
 
@@ -165,34 +215,24 @@ do
             elseif core_str.has_prefix(key, "graphql_") then
                 -- trim the "graphql_" prefix
                 key = sub_str(key, 9)
-                val = get_parsed_graphql(t)[key]
-
-            elseif key == "route_id" then
-                val = ngx.ctx.api_ctx and ngx.ctx.api_ctx.route_id
-
-            elseif key == "service_id" then
-                val = ngx.ctx.api_ctx and ngx.ctx.api_ctx.service_id
-
-            elseif key == "consumer_name" then
-                val = ngx.ctx.api_ctx and ngx.ctx.api_ctx.consumer_name
-
-            elseif key == "route_name" then
-                val = ngx.ctx.api_ctx and ngx.ctx.api_ctx.route_name
-
-            elseif key == "service_name" then
-                val = ngx.ctx.api_ctx and ngx.ctx.api_ctx.service_name
-
-            elseif key == "balancer_ip" then
-                val = ngx.ctx.api_ctx and ngx.ctx.api_ctx.balancer_ip
-
-            elseif key == "balancer_port" then
-                val = ngx.ctx.api_ctx and ngx.ctx.api_ctx.balancer_port
+                val = get_parsed_graphql()[key]
 
             else
-                val = get_var(key, t._request)
+                local getter = apisix_var_names[key]
+                if getter then
+                    if getter == true then
+                        val = ngx.ctx.api_ctx and ngx.ctx.api_ctx[key]
+                    else
+                        -- the getter is registered by ctx.register_var
+                        val = getter(ngx.ctx.api_ctx)
+                    end
+
+                else
+                    val = get_var(key, t._request)
+                end
             end
 
-            if val ~= nil then
+            if val ~= nil and not no_cacheable_var_names[key] then
                 t._cache[key] = val
             end
 
@@ -208,6 +248,18 @@ do
             t._cache[key] = val
         end,
     }
+
+function _M.register_var(name, getter)
+    if type(getter) ~= "function" then
+        error("the getter of registered var should be a function")
+    end
+
+    if apisix_var_names[name] then
+        error(name .. " is registered")
+    end
+
+    apisix_var_names[name] = getter
+end
 
 function _M.set_vars_meta(ctx)
     local var = tablepool.fetch("ctx_var", 0, 32)

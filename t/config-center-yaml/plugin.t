@@ -29,7 +29,6 @@ apisix:
     node_listen: 1984
     config_center: yaml
     enable_admin: false
-    enable_debug: true
 _EOC_
 
     $block->set_value("yaml_config", $yaml_config);
@@ -52,6 +51,9 @@ _EOC_
     }
 });
 
+our $debug_config = t::APISIX::read_file("conf/debug.yaml");
+$debug_config =~ s/basic:\n  enable: false/basic:\n  enable: true/;
+
 run_tests();
 
 __DATA__
@@ -63,8 +65,22 @@ plugins:
   - name: jwt-auth
   - name: mqtt-proxy
     stream: true
+--- debug_config eval: $::debug_config
+--- config
+    location /t {
+        content_by_lua_block {
+            ngx.sleep(0.3)
+            local http = require "resty.http"
+            local httpc = http.new()
+            local uri = "http://127.0.0.1:" .. ngx.var.server_port .. "/hello"
+            local res, err = httpc:request_uri(uri, {
+                    method = "GET",
+                })
+            ngx.print(res.body)
+        }
+    }
 --- request
-GET /hello
+GET /t
 --- response_body
 hello world
 --- error_log
@@ -82,13 +98,12 @@ load(): new plugins
 
 
 
-=== TEST 2: plugins not changed
+=== TEST 2: plugins not changed, but still need to reload
 --- yaml_config
 apisix:
     node_listen: 1984
     config_center: yaml
     enable_admin: false
-    enable_debug: true
 plugins:
     - ip-restriction
     - jwt-auth
@@ -100,16 +115,29 @@ plugins:
   - name: jwt-auth
   - name: mqtt-proxy
     stream: true
+--- debug_config eval: $::debug_config
+--- config
+    location /t {
+        content_by_lua_block {
+            ngx.sleep(0.3)
+            local http = require "resty.http"
+            local httpc = http.new()
+            local uri = "http://127.0.0.1:" .. ngx.var.server_port .. "/hello"
+            local res, err = httpc:request_uri(uri, {
+                    method = "GET",
+                })
+            ngx.print(res.body)
+        }
+    }
 --- request
-GET /hello
+GET /t
 --- response_body
 hello world
---- error_log
-load(): loaded plugin and sort by priority: 3000 name: ip-restriction
-load(): loaded plugin and sort by priority: 2510 name: jwt-auth
-load_stream(): loaded stream plugin and sort by priority: 1000 name: mqtt-proxy
-load(): plugins not changed
-load_stream(): plugins not changed
+--- grep_error_log eval
+qr/loaded plugin and sort by priority: \d+ name: [^,]+/
+--- grep_error_log_out eval
+qr/(loaded plugin and sort by priority: (3000 name: ip-restriction|2510 name: jwt-auth)
+){4}/
 
 
 
@@ -125,7 +153,12 @@ GET /apisix/prometheus/metrics
 
 === TEST 4: enable plugin and its router
 --- apisix_yaml
+routes:
+  - uri: /apisix/prometheus/metrics
+    plugins:
+        public-api: {}
 plugins:
+  - name: public-api
   - name: prometheus
 --- request
 GET /apisix/prometheus/metrics

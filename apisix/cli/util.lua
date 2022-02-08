@@ -29,7 +29,7 @@ local _M = {}
 
 -- Note: The `execute_cmd` return value will have a line break at the end,
 -- it is recommended to use the `trim` function to handle the return value.
-function _M.execute_cmd(cmd)
+local function execute_cmd(cmd)
     local t, err = popen(cmd)
     if not t then
         return nil, "failed to execute command: "
@@ -39,12 +39,20 @@ function _M.execute_cmd(cmd)
     local data, err = t:read("*all")
     t:close()
 
-    if err ~= nil then
+    if not data then
         return nil, "failed to read execution result of: "
                     .. cmd .. ", error info: " .. err
     end
 
     return data
+end
+_M.execute_cmd = execute_cmd
+
+
+-- For commands which stdout would be always be empty,
+-- forward stderr to stdout to get the error msg
+function _M.execute_cmd_with_error(cmd)
+    return execute_cmd(cmd .. " 2>&1")
 end
 
 
@@ -70,12 +78,11 @@ function _M.read_file(file_path)
     end
 
     local data, err = file:read("*all")
-    if err ~= nil then
-        file:close()
+    file:close()
+    if not data then
         return false, "failed to read file: " .. file_path .. ", error info:" .. err
     end
 
-    file:close()
     return data
 end
 

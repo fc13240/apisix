@@ -104,3 +104,107 @@ serverless []
 uri: /plugin_proxy_rewrite
 host: localhost
 scheme: http
+
+
+
+=== TEST 3: default X-Forwarded-Proto
+--- apisix_yaml
+routes:
+  -
+    id: 1
+    uri: /echo
+    upstream_id: 1
+upstreams:
+  -
+    id: 1
+    nodes:
+        "127.0.0.1:1980": 1
+    type: roundrobin
+#END
+--- request
+GET /echo
+--- response_headers
+X-Forwarded-Proto: http
+
+
+
+=== TEST 4: pass X-Forwarded-Proto
+--- apisix_yaml
+routes:
+  -
+    id: 1
+    uri: /echo
+    upstream_id: 1
+upstreams:
+  -
+    id: 1
+    nodes:
+        "127.0.0.1:1980": 1
+    type: roundrobin
+#END
+--- request
+GET /echo
+--- more_headers
+X-Forwarded-Proto: https
+--- response_headers
+X-Forwarded-Proto: https
+
+
+
+=== TEST 5: customize X-Forwarded-Proto
+--- apisix_yaml
+routes:
+  -
+    id: 1
+    uri: /echo
+    plugins:
+        proxy-rewrite:
+            headers:
+                X-Forwarded-Proto: https
+    upstream_id: 1
+upstreams:
+  -
+    id: 1
+    nodes:
+        "127.0.0.1:1980": 1
+    type: roundrobin
+#END
+--- request
+GET /echo
+--- more_headers
+X-Forwarded-Proto: grpc
+--- response_headers
+X-Forwarded-Proto: https
+
+
+
+=== TEST 6: make sure X-Forwarded-Proto hit the `core.request.header` cache
+--- apisix_yaml
+routes:
+  -
+    id: 1
+    uri: /echo
+    plugins:
+        serverless-pre-function:
+            phase: rewrite
+            functions:
+              - return function(conf, ctx) local core = require("apisix.core"); ngx.log(ngx.ERR, core.request.header(ctx, "host")); end
+        proxy-rewrite:
+            headers:
+                X-Forwarded-Proto: https-rewrite
+    upstream_id: 1
+upstreams:
+  -
+    id: 1
+    nodes:
+        "127.0.0.1:1980": 1
+    type: roundrobin
+#END
+--- request
+GET /echo
+--- more_headers
+X-Forwarded-Proto: grpc
+--- response_headers
+X-Forwarded-Proto: https-rewrite
+--- error_log
+localhost

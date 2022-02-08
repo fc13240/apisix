@@ -44,9 +44,9 @@ etcd:
 --- request
 GET /t
 --- grep_error_log eval
-qr{failed to fetch data from etcd: connection refused,  etcd key: .*routes}
+qr{connection refused}
 --- grep_error_log_out eval
-qr/(failed to fetch data from etcd: connection refused,  etcd key: .*routes\n){1,}/
+qr/(connection refused){1,}/
 
 
 
@@ -57,6 +57,11 @@ apisix:
 etcd:
   host:
     - "https://127.0.0.1:2379"
+--- extra_init_by_lua
+local health_check = require("resty.etcd.health_check")
+health_check.get_target_status = function()
+    return true
+end
 --- config
     location /t {
         content_by_lua_block {
@@ -68,9 +73,9 @@ etcd:
 --- request
 GET /t
 --- grep_error_log chop
-failed to fetch data from etcd: handshake failed
+handshake failed
 --- grep_error_log_out eval
-qr/(failed to fetch data from etcd: handshake failed){1,}/
+qr/(handshake failed){1,}/
 
 
 
@@ -92,9 +97,9 @@ etcd:
 --- request
 GET /t
 --- grep_error_log chop
-failed to fetch data from etcd: closed
+closed
 --- grep_error_log_out eval
-qr/(failed to fetch data from etcd: closed){1,}/
+qr/(closed){1,}/
 
 
 
@@ -105,6 +110,11 @@ apisix:
 etcd:
   host:
     - "https://127.0.0.1:12379"
+--- extra_init_by_lua
+local health_check = require("resty.etcd.health_check")
+health_check.get_target_status = function()
+    return true
+end
 --- config
     location /t {
         content_by_lua_block {
@@ -116,9 +126,9 @@ etcd:
 --- request
 GET /t
 --- grep_error_log chop
-failed to fetch data from etcd: 18: self signed certificate
+18: self signed certificate
 --- grep_error_log_out eval
-qr/(failed to fetch data from etcd: 18: self signed certificate){1,}/
+qr/(18: self signed certificate){1,}/
 
 
 
@@ -244,6 +254,11 @@ etcd:
   timeout: 1
   user: root                    # root username for etcd
   password: 5tHkHhYkjr6cQY      # root password for etcd
+--- extra_init_by_lua
+local health_check = require("resty.etcd.health_check")
+health_check.get_target_status = function()
+    return true
+end
 --- config
     location /t {
         content_by_lua_block {
@@ -259,3 +274,55 @@ etcd auth failed
 etcd auth failed
 etcd auth failed
 etcd auth failed
+
+
+
+=== TEST 8: ensure add prefix automatically for _M.getkey
+--- config
+    location /t {
+        content_by_lua_block {
+            local core = require("apisix.core")
+
+            local config = core.config.new()
+            local res = config:getkey("/routes/")
+            if res and res.status == 200 and res.body
+               and res.body.node and res.body.node.key == "/apisix/routes" then
+                ngx.say("passed")
+              else
+                ngx.say("failed")
+            end
+
+            local res = config:getkey("/phantomkey")
+            if res and res.status == 404 then
+                ngx.say("passed")
+            else
+                ngx.say("failed")
+            end
+        }
+    }
+--- request
+GET /t
+--- response_body
+passed
+passed
+--- no_error_log
+[error]
+
+
+
+=== TEST 9: Test ETCD health check mode switch during APISIX startup
+--- config
+    location /t {
+        content_by_lua_block {
+            ngx.say("passed")
+        }
+    }
+--- request
+GET /t
+--- response_body
+passed
+--- grep_error_log eval
+qr/healthy check use \S+ \w+/
+--- grep_error_log_out eval
+qr/healthy check use round robin
+(healthy check use ngx.shared dict){1,}/

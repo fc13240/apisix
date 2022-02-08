@@ -48,6 +48,7 @@ Once we've discussed your changes and you've got your code ready, make sure that
 * References the original issue in the description, e.g. "Resolves #123".
 * Has a [good commit message](http://tbaggery.com/2008/04/19/a-note-about-git-commit-messages.html).
 * Ensure your pull request's title starts from one of the word in the `types` section of [semantic.yml](https://github.com/apache/apisix/blob/master/.github/semantic.yml).
+* Follow the [PR manners](https://raw.githubusercontent.com/apache/apisix/master/.github/PULL_REQUEST_TEMPLATE.md)
 
 ## Contribution Guidelines for Documentation
 
@@ -56,7 +57,6 @@ Once we've discussed your changes and you've got your code ready, make sure that
     For linting both our Markdown and YAML files we use:
 
     - npm based [markdownlint-cli](https://www.npmjs.com/package/markdownlint-cli)
-    - [yamllint](https://yamllint.readthedocs.io/en/stable/) which can be installed in multiple ways
 
 * Active Voice
 
@@ -104,41 +104,36 @@ Once we've discussed your changes and you've got your code ready, make sure that
         $ luarocks install luacheck
         # check source code
         $ make lint
-        luacheck -q lua
-        Total: 0 warnings / 0 errors in 74 files
-        ./utils/lj-releng \
-            apisix/*.lua \
-            apisix/admin/*.lua \
-            apisix/core/*.lua \
-            apisix/http/*.lua \
-            apisix/http/router/*.lua \
-            apisix/plugins/*.lua \
-            apisix/plugins/grpc-transcode/*.lua \
-            apisix/plugins/limit-count/*.lua > \
-            /tmp/check.log 2>&1 || (cat /tmp/check.log && exit 1)
+        ./utils/check-lua-code-style.sh
+        + luacheck -q apisix t/lib
+        Total: 0 warnings / 0 errors in 146 files
+        + find apisix -name *.lua ! -wholename apisix/cli/ngx_tpl.lua -exec ./utils/lj-releng {} +
+        + grep -E ERROR.*.lua: /tmp/check.log
+        + true
+        + [ -s /tmp/error.log ]
+        ./utils/check-test-code-style.sh
+        + find t -name '*.t' -exec grep -E '\-\-\-\s+(SKIP|ONLY|LAST|FIRST)$' '{}' +
+        + true
+        + '[' -s /tmp/error.log ']'
+        + find t -name '*.t' -exec ./utils/reindex '{}' +
+        + grep done. /tmp/check.log
+        + true
+        + '[' -s /tmp/error.log ']'
 ```
 
-      The `lj-releng` will be downloaded automatically by `make lint` if not exists.
+      The `lj-releng` and `reindex` will be downloaded automatically by `make lint` if not exists.
 
 * test case style
-    * Use tool to check your test case style statically by command, eg: `reindex t/admin/*.t`.
-
-```shell
-    # install `reindex` first before run it
-    # wget https://raw.githubusercontent.com/iresty/openresty-devel-utils/master/reindex
-    # ./reindex test cases
-    $ reindex t/admin/*.t
-    reindex: t/plugin/example.t:	skipped.        # No changes needed
-    reindex: t/plugin/fault-injection.t:	done.   # updated
-    reindex: t/plugin/grpc-transcode.t:	skipped.
-    ... ...
-    reindex: t/plugin/udp-logger.t:	done.
-    reindex: t/plugin/zipkin.t:	skipped.
-```
-
-    * By the way, we can download "reindex" to another path and add this path to "PATH" environment.
+    * Use tool to check your test case style statically by command, eg: `make lint`.
     * When the test file is too large, for example > 800 lines, you should split it to a new file.
       Please take a look at `t/plugin/limit-conn.t` and `t/plugin/limit-conn2.t`.
+    * For more details, see the [testing framework](https://github.com/apache/apisix/blob/master/docs/en/latest/internal/testing-framework.md)
+
+## Contributor T-shirt
+
+If you have contributed to Apache APISIX, no matter it is a code contribution to fix a bug or a feature request, or a documentation change, Congratulations! You are eligible to receive the very special Contributor T-shirt! It's always been the community effort that has made Apache APISIX be understood and used by more developers. Go ahead and fill out the [Contributors Submissions form](https://docs.google.com/forms/d/e/1FAIpQLSdXEpCs60UK49UlOGdBCQSXr7DYz3enyT4GJPKrYQmYfVLPKQ/viewform).
+
+![Contributor T-shirt](https://static.apiseven.com/202108/1642392020136-19a7c07b-27de-4c29-9168-099532d2638f.jpg)
 
 ## Do you have questions about the source code?
 

@@ -30,18 +30,13 @@ script() {
     export_or_prefix
     openresty -V
 
-    sudo rm -rf /usr/local/apisix
+    sudo rm -rf /usr/local/share/lua/5.1/apisix
 
     # install APISIX with local version
-    for (( i = 0; i < 10; i++ )); do
-        if [[ "$i" -eq 10 ]]; then
-            echo "failed to install in time"
-            cat build.log && exit 1
-            exit 1
-        fi
-        sudo luarocks install rockspec/apisix-master-0.rockspec --only-deps  > build.log 2>&1 && break
-    done
+    sudo luarocks install rockspec/apisix-master-0.rockspec --only-deps > build.log 2>&1 || (cat build.log && exit 1)
     sudo luarocks make rockspec/apisix-master-0.rockspec > build.log 2>&1 || (cat build.log && exit 1)
+    # ensure all files under apisix is installed
+    diff -rq apisix /usr/local/share/lua/5.1/apisix
 
     mkdir cli_tmp && cd cli_tmp
 
@@ -65,8 +60,16 @@ script() {
     # apisix cli test
     ./utils/set-dns.sh
 
+    # install test dependencies
+    sudo pip install requests
+
+    # dismiss "maximum number of open file descriptors too small" warning
+    ulimit -n 10240
+    ulimit -n -S
+    ulimit -n -H
+
     for f in ./t/cli/test_*.sh; do
-        sudo PATH="$PATH" "$f"
+        PATH="$PATH" "$f"
     done
 }
 

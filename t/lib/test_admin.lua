@@ -67,7 +67,7 @@ local methods = {
 
 function _M.test_ipv6(uri)
     local sock = ngx.socket.tcp()
-    local ok, err = sock:connect("[::1]", 12345)
+    local ok, err = sock:connect("[::1]", 1984)
     if not ok then
         ngx.say("failed to connect: ", err)
         return
@@ -91,7 +91,11 @@ function _M.test_ipv6(uri)
     while true do
         local line, err, part = sock:receive()
         if line then
-            ngx.say("received: ", line)
+            if line ~= "" then
+                ngx.say("received: ", line)
+            else
+                ngx.say("received:")
+            end
 
         else
             ngx.say("failed to receive a line: ", err, " [", part, "]")
@@ -193,11 +197,11 @@ function _M.test(uri, method, body, pattern, headers)
     end
 
     if res.status >= 300 then
-        return res.status, res.body
+        return res.status, res.body, res.headers
     end
 
     if pattern == nil then
-        return res.status, "passed", res.body
+        return res.status, "passed", res.body, res.headers
     end
 
     local res_data = json.decode(res.body)
@@ -206,7 +210,7 @@ function _M.test(uri, method, body, pattern, headers)
         return 500, "failed, " .. err, res_data
     end
 
-    return 200, "passed", res_data
+    return 200, "passed", res_data, res.headers
 end
 
 

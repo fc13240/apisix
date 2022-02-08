@@ -178,7 +178,7 @@ GET /t
 GET /t
 --- error_code: 400
 --- response_body
-{"error_msg":"failed to check the configuration of plugin api-breaker err: property \"break_response_code\" validation failed: expected 199 to be greater than 200"}
+{"error_msg":"failed to check the configuration of plugin api-breaker err: property \"break_response_code\" validation failed: expected 199 to be at least 200"}
 --- no_error_log
 [error]
 
@@ -516,8 +516,8 @@ GET /api_breaker?code=500
 
 === TEST 16: unhealthy -> timeout -> normal
 --- config
-    location /sleep1 {
-        proxy_pass "http://127.0.0.1:1980/sleep1";
+    location /mysleep {
+        proxy_pass "http://127.0.0.1:1980/mysleep?seconds=1";
     }
 --- request eval
 [
@@ -526,9 +526,9 @@ GET /api_breaker?code=500
     "GET /api_breaker?code=500",
     "GET /api_breaker?code=200",
 
-    "GET /sleep1",
-    "GET /sleep1",
-    "GET /sleep1",
+    "GET /mysleep",
+    "GET /mysleep",
+    "GET /mysleep",
 
     "GET /api_breaker?code=200",
     "GET /api_breaker?code=200",
@@ -548,15 +548,15 @@ GET /api_breaker?code=500
 
 === TEST 17: unhealthy -> timeout -> unhealthy
 --- config
-location /sleep1 {
-    proxy_pass "http://127.0.0.1:1980/sleep1";
+location /mysleep {
+    proxy_pass "http://127.0.0.1:1980/mysleep?seconds=1";
 }
 --- request eval
 [
     "GET /api_breaker?code=500", "GET /api_breaker?code=500",
     "GET /api_breaker?code=500", "GET /api_breaker?code=200",
 
-    "GET /sleep1", "GET /sleep1", "GET /sleep1",
+    "GET /mysleep", "GET /mysleep", "GET /mysleep",
 
     "GET /api_breaker?code=500","GET /api_breaker?code=500",
     "GET /api_breaker?code=500","GET /api_breaker?code=500"

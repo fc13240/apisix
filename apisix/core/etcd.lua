@@ -17,10 +17,10 @@
 local fetch_local_conf = require("apisix.core.config_local").local_conf
 local etcd             = require("resty.etcd")
 local clone_tab        = require("table.clone")
+local health_check     = require("resty.etcd.health_check")
 local ipairs           = ipairs
 local string           = string
 local tonumber         = tonumber
-
 local _M = {}
 
 
@@ -38,7 +38,6 @@ local function new()
     etcd_conf.prefix = nil
     etcd_conf.protocol = "v3"
     etcd_conf.api_prefix = "/v3"
-    etcd_conf.ssl_verify = true
 
     -- default to verify etcd cluster certificate
     etcd_conf.ssl_verify = true
@@ -51,6 +50,18 @@ local function new()
             etcd_conf.ssl_cert_path = etcd_conf.tls.cert
             etcd_conf.ssl_key_path = etcd_conf.tls.key
         end
+
+        if etcd_conf.tls.sni then
+            etcd_conf.sni = etcd_conf.tls.sni
+        end
+    end
+
+    -- enable etcd health check retry for curr worker
+    if not health_check.conf then
+        health_check.init({
+            max_fails = #etcd_conf.http_host,
+            retry = true,
+        })
     end
 
     local etcd_cli
@@ -98,6 +109,15 @@ end
 function _M.get_format(res, real_key, is_dir, formatter)
     if res.body.error == "etcdserver: user name is empty" then
         return nil, "insufficient credentials code: 401"
+    end
+
+    if res.body.error == "etcdserver: permission denied" then
+        return nil, "etcd forbidden code: 403"
+    end
+
+    if res.body.error then
+        -- other errors, like "grpc: received message larger than max"
+        return nil, res.body.error
     end
 
     res.headers["X-Etcd-Index"] = res.body.header.revision
@@ -301,6 +321,9 @@ function _M.push(key, value, ttl)
     -- manually add suffix
     local index = res.body.header.revision
     index = string.format("%020d", index)
+
+    -- set the basic id attribute
+    value.id = index
 
     res, err = set(key .. "/" .. index, value, ttl)
     if not res then

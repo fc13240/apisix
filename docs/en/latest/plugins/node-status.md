@@ -41,7 +41,7 @@ None
 ## API
 
 This plugin will add `/apisix/status` to get status information.
-You may need to use [interceptors](../plugin-interceptors.md) to protect it.
+You may need to use [public-api](public-api.md) plugin to expose it.
 
 ## How To Enable
 
@@ -59,27 +59,6 @@ plugins:                          # plugin list
 ```
 
 After starting `APISIX`, you can get status information through the API `/apisix/status`.
-
-2. Create a route object, and enable plugin `node-status`.
-
-```sh
-$ curl http://127.0.0.1:9080/apisix/admin/routes/1 -H 'X-API-KEY: edd1c9f034335f136f87ad84b625c8f1' -X PUT -i -d '
-{
-    "uri": "/route1",
-    "upstream": {
-        "type": "roundrobin",
-        "nodes": {
-            "192.168.1.100:80:": 1
-        }
-    },
-    "plugins": {
-        "node-status":{}
-    }
-}'
-```
-
-You have to configure `node-status` in the configuration file `apisix/conf/config.yaml` before creating a route like this.
-And this plugin will not make any difference in future requests, so usually we don't set this plugin when creating routes.
 
 ## Test Plugin
 

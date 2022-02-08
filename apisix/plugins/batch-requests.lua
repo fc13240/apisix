@@ -26,9 +26,21 @@ local str_lower = string.lower
 
 local plugin_name = "batch-requests"
 
+local default_uri = "/apisix/batch-requests"
+
+local attr_schema = {
+    type = "object",
+    properties = {
+        uri = {
+            type = "string",
+            description = "uri for batch-requests",
+            default = default_uri
+        }
+    },
+}
+
 local schema = {
     type = "object",
-    additionalProperties = false,
 }
 
 local default_max_body_size = 1024 * 1024 -- 1MiB
@@ -42,7 +54,6 @@ local metadata_schema = {
             default = default_max_body_size,
         },
     },
-    additionalProperties = false,
 }
 
 local method_schema = core.table.clone(core.schema.method_schema)
@@ -108,15 +119,16 @@ local _M = {
     name = plugin_name,
     schema = schema,
     metadata_schema = metadata_schema,
+    attr_schema = attr_schema,
+    scope = "global",
 }
 
 
-function _M.check_schema(conf)
-    local ok, err = core.schema.check(schema, conf)
-    if not ok then
-        return false, err
+function _M.check_schema(conf, schema_type)
+    if schema_type == core.schema.TYPE_METADATA then
+        return core.schema.check(metadata_schema, conf)
     end
-    return true
+    return core.schema.check(schema, conf)
 end
 
 
@@ -150,6 +162,12 @@ end
 
 
 local function set_common_header(data)
+    local local_conf = core.config.local_conf()
+    local real_ip_hdr = core.table.try_read_attr(local_conf, "nginx_config", "http",
+                                                 "real_ip_header")
+    -- we don't need to handle '_' to '-' as Nginx won't treat 'X_REAL_IP' as 'X-Real-IP'
+    real_ip_hdr = str_lower(real_ip_hdr)
+
     local outer_headers = core.request.headers(nil)
     for i,req in ipairs(data.pipeline) do
         for k, v in pairs(data.headers) do
@@ -167,6 +185,8 @@ local function set_common_header(data)
                 end
             end
         end
+
+        req.headers[real_ip_hdr] = core.request.get_remote_client_ip()
     end
 end
 
@@ -264,10 +284,15 @@ end
 
 
 function _M.api()
+    local uri = default_uri
+    local attr = plugin.plugin_attr(plugin_name)
+    if attr then
+        uri = attr.uri or default_uri
+    end
     return {
         {
             methods = {"POST"},
-            uri = "/apisix/batch-requests",
+            uri = uri,
             handler = batch_requests,
         }
     }

@@ -64,6 +64,8 @@ __DATA__
             res.node.key = nil
             res.node.value.create_time = nil
             res.node.value.update_time = nil
+            assert(res.node.value.id ~= nil)
+            res.node.value.id = nil
             ngx.say(json.encode(res))
         }
     }
@@ -288,6 +290,6 @@ no valid upstream node
 GET /t
 --- error_code: 400
 --- response_body_like eval
-qr/{"error_msg":"invalid configuration: property \\\"timeout\\\" validation failed: property \\\"(connect|send|read)\\\" validation failed: expected 0 to be strictly greater than 0"}/
+qr/{"error_msg":"invalid configuration: property \\\"timeout\\\" validation failed: property \\\"(connect|send|read)\\\" validation failed: expected 0 to be greater than 0"}/
 --- no_error_log
 [error]

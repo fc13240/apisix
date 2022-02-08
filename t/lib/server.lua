@@ -17,6 +17,23 @@
 local json_decode = require("toolkit.json").decode
 local json_encode = require("toolkit.json").encode
 
+local rsa_public_key = [[
+-----BEGIN PUBLIC KEY-----
+MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBAKebDxlvQMGyEesAL1r1nIJBkSdqu3Hr
+7noq/0ukiZqVQLSJPMOv0oxQSutvvK3hoibwGakDOza+xRITB7cs2cECAwEAAQ==
+-----END PUBLIC KEY-----]]
+
+local rsa_private_key = [[
+-----BEGIN RSA PRIVATE KEY-----
+MIIBOgIBAAJBAKebDxlvQMGyEesAL1r1nIJBkSdqu3Hr7noq/0ukiZqVQLSJPMOv
+0oxQSutvvK3hoibwGakDOza+xRITB7cs2cECAwEAAQJAYPWh6YvjwWobVYC45Hz7
++pqlt1DWeVQMlN407HSWKjdH548ady46xiQuZ5Cfx3YyCcnsfVWaQNbC+jFbY4YL
+wQIhANfASwz8+2sKg1xtvzyaChX5S5XaQTB+azFImBJumixZAiEAxt93Td6JH1RF
+IeQmD/K+DClZMqSrliUzUqJnCPCzy6kCIAekDsRh/UF4ONjAJkKuLedDUfL3rNFb
+2M4BBSm58wnZAiEAwYLMOg8h6kQ7iMDRcI9I8diCHM8yz0SfbfbsvzxIFxECICXs
+YvIufaZvBa8f+E/9CANlVhm5wKAyM8N8GJsiCyEG
+-----END RSA PRIVATE KEY-----]]
+
 local _M = {}
 
 
@@ -31,6 +48,7 @@ end
 
 
 function _M.hello()
+    ngx.req.read_body()
     local s = "hello world"
     ngx.header['Content-Length'] = #s + 1
     ngx.say(s)
@@ -48,11 +66,6 @@ end
 
 function _M.hello1()
     ngx.say("hello1 world")
-end
-
-
-function _M.hello_()
-    ngx.say("hello world")
 end
 
 
@@ -80,6 +93,7 @@ function _M.plugin_proxy_rewrite()
     ngx.say("uri: ", ngx.var.uri)
     ngx.say("host: ", ngx.var.host)
     ngx.say("scheme: ", ngx.var.scheme)
+    ngx.log(ngx.WARN, "plugin_proxy_rewrite get method: ", ngx.req.get_method())
 end
 
 
@@ -94,18 +108,26 @@ function _M.plugin_proxy_rewrite_args()
     table.sort(keys)
 
     for _, key in ipairs(keys) do
-        ngx.say(key, ": ", args[key])
+        if type(args[key]) == "table" then
+            ngx.say(key, ": ", table.concat(args[key], ','))
+        else
+            ngx.say(key, ": ", args[key])
+        end
+    end
+end
+
+
+function _M.specific_status()
+    local status = ngx.var.http_x_test_upstream_status
+    if status ~= nil then
+        ngx.status = status
+        ngx.say("upstream status: ", status)
     end
 end
 
 
 function _M.status()
-    ngx.say("ok")
-end
-
-
-function _M.sleep1()
-    ngx.sleep(1)
+    ngx.log(ngx.WARN, "client request host: ", ngx.var.http_host)
     ngx.say("ok")
 end
 
@@ -121,14 +143,22 @@ function _M.ewma()
 end
 
 
+local builtin_hdr_ignore_list = {
+    ["x-forwarded-for"] = true,
+    ["x-forwarded-proto"] = true,
+    ["x-forwarded-host"] = true,
+    ["x-forwarded-port"] = true,
+}
+
 function _M.uri()
-    -- ngx.sleep(1)
     ngx.say("uri: ", ngx.var.uri)
     local headers = ngx.req.get_headers()
 
     local keys = {}
     for k in pairs(headers) do
-        table.insert(keys, k)
+        if not builtin_hdr_ignore_list[k] then
+            table.insert(keys, k)
+        end
     end
     table.sort(keys)
 
@@ -141,7 +171,6 @@ _M.uri_plugin_proxy_rewrite_args = _M.uri
 
 
 function _M.old_uri()
-    -- ngx.sleep(1)
     ngx.say("uri: ", ngx.var.uri)
     local headers = ngx.req.get_headers()
 
@@ -333,7 +362,11 @@ end
 
 function _M.mysleep()
     ngx.sleep(tonumber(ngx.var.arg_seconds))
-    ngx.say(ngx.var.arg_seconds)
+    if ngx.var.arg_abort then
+        ngx.exit(ngx.ERROR)
+    else
+        ngx.say(ngx.var.arg_seconds)
+    end
 end
 
 
@@ -342,18 +375,6 @@ local function print_uri()
 end
 for i = 1, 100 do
     _M["print_uri_" .. i] = print_uri
-end
-
-
-function _M.go()
-    local action = string.sub(ngx.var.uri, 2)
-    action = string.gsub(action, "[/\\.]", "_")
-    if not action or not _M[action] then
-        return ngx.exit(404)
-    end
-
-    inject_headers()
-    return _M[action]()
 end
 
 
@@ -374,7 +395,7 @@ function _M.echo()
     for k, v in pairs(hdrs) do
         ngx.header[k] = v
     end
-    ngx.say(ngx.req.get_body_data() or "")
+    ngx.print(ngx.req.get_body_data() or "")
 end
 
 
@@ -392,6 +413,127 @@ end
 
 function _M.server_error()
     error("500 Internal Server Error")
+end
+
+
+function _M.log_request()
+    ngx.log(ngx.WARN, "uri: ", ngx.var.uri)
+    local headers = ngx.req.get_headers()
+
+    local keys = {}
+    for k in pairs(headers) do
+        table.insert(keys, k)
+    end
+    table.sort(keys)
+
+    for _, key in ipairs(keys) do
+        ngx.log(ngx.WARN, key, ": ", headers[key])
+    end
+end
+
+
+function _M.v3_auth_authenticate()
+    ngx.log(ngx.WARN, "etcd auth failed!")
+end
+
+
+function _M._well_known_openid_configuration()
+    local t = require("lib.test_admin")
+    local openid_data = t.read_file("t/plugin/openid-configuration.json")
+    ngx.say(openid_data)
+end
+
+function _M.google_logging_token()
+    local args = ngx.req.get_uri_args()
+    local args_token_type = args.token_type or "Bearer"
+    ngx.req.read_body()
+    local data = ngx.decode_args(ngx.req.get_body_data())
+    local jwt = require("resty.jwt")
+    local access_scopes = "https://apisix.apache.org/logs:admin"
+    local verify = jwt:verify(rsa_public_key, data["assertion"])
+    if not verify.verified then
+        ngx.status = 401
+        ngx.say(json_encode({ error = "identity authentication failed" }))
+        return
+    end
+
+    local scopes_valid = type(verify.payload.scope) == "string" and
+            verify.payload.scope:find(access_scopes)
+    if not scopes_valid then
+        ngx.status = 403
+        ngx.say(json_encode({ error = "no access to this scopes" }))
+        return
+    end
+
+    local expire_time = (verify.payload.exp or ngx.time()) - ngx.time()
+    if expire_time <= 0 then
+        expire_time = 0
+    end
+
+    local jwt_token = jwt:sign(rsa_private_key, {
+        header = { typ = "JWT", alg = "RS256" },
+        payload = { exp = verify.payload.exp, scope = access_scopes }
+    })
+
+    ngx.say(json_encode({
+        access_token = jwt_token,
+        expires_in = expire_time,
+        token_type = args_token_type
+    }))
+end
+
+function _M.google_logging_entries()
+    local args = ngx.req.get_uri_args()
+    local args_token_type = args.token_type or "Bearer"
+    ngx.req.read_body()
+    local data = ngx.req.get_body_data()
+    local jwt = require("resty.jwt")
+    local access_scopes = "https://apisix.apache.org/logs:admin"
+
+    local headers = ngx.req.get_headers()
+    local token = headers["Authorization"]
+    if not token then
+        ngx.status = 401
+        ngx.say(json_encode({ error = "authentication header not exists" }))
+        return
+    end
+
+    token = string.sub(token, string.len(args_token_type) + 2)
+    local verify = jwt:verify(rsa_public_key, token)
+    if not verify.verified then
+        ngx.status = 401
+        ngx.say(json_encode({ error = "identity authentication failed" }))
+        return
+    end
+
+    local scopes_valid = type(verify.payload.scope) == "string" and
+            verify.payload.scope:find(access_scopes)
+    if not scopes_valid then
+        ngx.status = 403
+        ngx.say(json_encode({ error = "no access to this scopes" }))
+        return
+    end
+
+    local expire_time = (verify.payload.exp or ngx.time()) - ngx.time()
+    if expire_time <= 0 then
+        ngx.status = 403
+        ngx.say(json_encode({ error = "token has expired" }))
+        return
+    end
+
+    ngx.say(data)
+end
+
+-- Please add your fake upstream above
+function _M.go()
+    local action = string.sub(ngx.var.uri, 2)
+    action = string.gsub(action, "[/\\.-]", "_")
+    if not action or not _M[action] then
+        return ngx.exit(404)
+    end
+
+    inject_headers()
+    return _M[action]()
 end
 
 

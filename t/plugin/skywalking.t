@@ -15,16 +15,6 @@
 # limitations under the License.
 #
 
-BEGIN {
-    if ($ENV{TEST_NGINX_CHECK_LEAK}) {
-        $SkipReason = "unavailable for the hup tests";
-
-    } else {
-        $ENV{TEST_NGINX_USE_HUP} = 1;
-        undef $ENV{TEST_NGINX_USE_STAP};
-    }
-}
-
 use t::APISIX 'no_plan';
 
 add_block_preprocessor(sub {
@@ -36,6 +26,27 @@ plugins:
 _EOC_
 
     $block->set_value("extra_yaml_config", $extra_yaml_config);
+
+    my $extra_init_by_lua = <<_EOC_;
+    -- reduce default report interval
+    local client = require("skywalking.client")
+    client.backendTimerDelay = 0.5
+
+    local sw_tracer = require("skywalking.tracer")
+    local inject = function(mod, name)
+        local old_f = mod[name]
+        mod[name] = function (...)
+            ngx.log(ngx.WARN, "skywalking run ", name)
+            return old_f(...)
+        end
+    end
+
+    inject(sw_tracer, "start")
+    inject(sw_tracer, "finish")
+    inject(sw_tracer, "prepareForReport")
+_EOC_
+
+    $block->set_value("extra_init_by_lua", $extra_init_by_lua);
 
     $block;
 });
@@ -112,9 +123,13 @@ GET /opentracing
 opentracing
 --- no_error_log
 [error]
---- error_log
-segments reported
---- wait: 4
+--- grep_error_log eval
+qr/skywalking run \w+/
+--- grep_error_log_out
+skywalking run start
+skywalking run finish
+skywalking run prepareForReport
+--- wait: 1
 
 
 
@@ -181,8 +196,9 @@ passed
 GET /opentracing
 --- response_body
 opentracing
---- error_log
-miss sampling, ignore
+--- grep_error_log eval
+qr/skywalking run \w+/
+--- grep_error_log_out
 --- no_error_log
 [error]
 
@@ -315,4 +331,173 @@ GET /opentracing
 opentracing
 --- no_error_log
 [error]
---- wait: 4
+--- grep_error_log eval
+qr/skywalking run \w+/
+--- grep_error_log_out
+skywalking run start
+skywalking run finish
+skywalking run prepareForReport
+--- wait: 1
+
+
+
+=== TEST 9: enable at both global and route levels
+--- config
+    location /t {
+        content_by_lua_block {
+            local t = require("lib.test_admin").test
+            local code, body = t('/apisix/admin/routes/1',
+                ngx.HTTP_PUT,
+                [[{
+                    "plugins": {
+                        "skywalking": {
+                        }
+                    },
+                    "upstream": {
+                        "nodes": {
+                            "127.0.0.1:1980": 1
+                        },
+                        "type": "roundrobin"
+                    },
+                    "uri": "/opentracing"
+                }]]
+                )
+
+            if code >= 300 then
+                ngx.status = code
+                return
+            end
+
+            local t = require("lib.test_admin").test
+            local code, body = t('/apisix/admin/global_rules/1',
+                ngx.HTTP_PUT,
+                [[{
+                    "plugins": {
+                        "skywalking": {
+                        }
+                    }
+                }]]
+                )
+
+            if code >= 300 then
+                ngx.status = code
+                return
+            end
+            ngx.say(body)
+        }
+    }
+--- request
+GET /t
+--- response_body
+passed
+--- no_error_log
+[error]
+
+
+
+=== TEST 10: run once
+--- request
+GET /opentracing
+--- response_body
+opentracing
+--- no_error_log
+[error]
+--- grep_error_log eval
+qr/skywalking run \w+/
+--- grep_error_log_out
+skywalking run start
+skywalking run finish
+skywalking run prepareForReport
+
+
+
+=== TEST 11: enable at global but disable at route levels
+--- config
+    location /t {
+        content_by_lua_block {
+            local t = require("lib.test_admin").test
+            local code, body = t('/apisix/admin/routes/1',
+                ngx.HTTP_PUT,
+                [[{
+                    "plugins": {
+                        "skywalking": {
+                            "disable": 1
+                        }
+                    },
+                    "upstream": {
+                        "nodes": {
+                            "127.0.0.1:1980": 1
+                        },
+                        "type": "roundrobin"
+                    },
+                    "uri": "/opentracing"
+                }]]
+                )
+
+            if code >= 300 then
+                ngx.status = code
+                return
+            end
+
+            local t = require("lib.test_admin").test
+            local code, body = t('/apisix/admin/global_rules/1',
+                ngx.HTTP_PUT,
+                [[{
+                    "plugins": {
+                        "skywalking": {
+                        }
+                    }
+                }]]
+                )
+
+            if code >= 300 then
+                ngx.status = code
+                return
+            end
+            ngx.say(body)
+        }
+    }
+--- request
+GET /t
+--- response_body
+passed
+--- no_error_log
+[error]
+
+
+
+=== TEST 12: run once
+--- request
+GET /opentracing
+--- response_body
+opentracing
+--- no_error_log
+[error]
+--- grep_error_log eval
+qr/skywalking run \w+/
+--- grep_error_log_out
+skywalking run start
+skywalking run finish
+skywalking run prepareForReport
+
+
+
+=== TEST 13: delete global rule
+--- config
+    location /t {
+        content_by_lua_block {
+            local t = require("lib.test_admin").test
+            local code, body = t('/apisix/admin/global_rules/1', ngx.HTTP_DELETE)
+
+            if code >= 300 then
+                ngx.status = code
+            end
+            ngx.say(body)
+        }
+    }
+--- request
+GET /t
+--- response_body
+passed
+--- no_error_log
+[error]

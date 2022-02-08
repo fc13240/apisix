@@ -14,12 +14,12 @@
 -- See the License for the specific language governing permissions and
 -- limitations under the License.
 --
-local error   = error
 local pcall   = pcall
 local require = require
 local core    = require("apisix.core")
-local api_router = require("apisix.api_router")
+local utils   = require("apisix.admin.utils")
 
+local injected_mark = "injected metadata_schema"
 local _M = {
 }
 
@@ -50,27 +50,28 @@ local function check_conf(plugin_name, conf)
         return nil, {error_msg = "missing configurations"}
     end
 
-    local schema = plugin_object.metadata_schema or {
-        type = "object",
-        properties = {},
-    }
-    if not schema.properties then
-        schema.properties = {
-            additionalProperties = false,
+    if not plugin_object.metadata_schema then
+        plugin_object.metadata_schema = {
+            type = "object",
+            ['$comment'] = injected_mark,
+            properties = {},
         }
     end
-
-    -- inject interceptors schema to each plugins
-    if schema.properties.interceptors
-      and api_router.interceptors_schema['$comment'] ~= schema.properties.interceptors['$comment']
-    then
-        error("'interceptors' can not be used as the name of metadata schema's field")
-    end
-    schema.properties.interceptors = api_router.interceptors_schema
+    local schema = plugin_object.metadata_schema
 
     core.log.info("schema: ", core.json.delay_encode(schema))
-    core.log.info("conf  : ", core.json.delay_encode(conf))
-    local ok, err = core.schema.check(schema, conf)
+    core.log.info("conf: ", core.json.delay_encode(conf))
+
+    local ok, err
+    if schema['$comment'] == injected_mark
+      -- check_schema is not required. If missing, fallback to check schema directly
+      or not plugin_object.check_schema
+    then
+        ok, err = core.schema.check(schema, conf)
+    else
+        ok, err = plugin_object.check_schema(conf, core.schema.TYPE_METADATA)
+    end
+
     if not ok then
         return nil, {error_msg = "invalid configuration: " .. err}
     end
@@ -90,7 +91,7 @@ function _M.put(plugin_name, conf)
     local res, err = core.etcd.set(key, conf)
     if not res then
         core.log.error("failed to put plugin metadata[", key, "]: ", err)
-        return 500, {error_msg = err}
+        return 503, {error_msg = err}
     end
 
     return res.status, res.body
@@ -106,9 +107,10 @@ function _M.get(key)
     local res, err = core.etcd.get(path, not key)
     if not res then
         core.log.error("failed to get metadata[", key, "]: ", err)
-        return 500, {error_msg = err}
+        return 503, {error_msg = err}
     end
 
+    utils.fix_count(res.body, key)
     return res.status, res.body
 end
 
@@ -127,7 +129,7 @@ function _M.delete(key)
     local res, err = core.etcd.delete(key)
     if not res then
         core.log.error("failed to delete metadata[", key, "]: ", err)
-        return 500, {error_msg = err}
+        return 503, {error_msg = err}
     end
 
     return res.status, res.body

@@ -18,7 +18,8 @@ local core = require("apisix.core")
 local ngx_ssl = require("ngx.ssl")
 local ngx_encode_base64 = ngx.encode_base64
 local ngx_decode_base64 = ngx.decode_base64
-local aes = require "resty.aes"
+local aes = require("resty.aes")
+local str_lower = string.lower
 local assert = assert
 local type = type
 
@@ -33,6 +34,25 @@ local pkey_cache = core.lrucache.new {
 
 
 local _M = {}
+
+
+function _M.server_name()
+    local sni, err = ngx_ssl.server_name()
+    if err then
+        return nil, err
+    end
+
+    if not sni then
+        local local_conf = core.config.local_conf()
+        sni = core.table.try_read_attr(local_conf, "apisix", "ssl", "fallback_sni")
+        if not sni then
+            return nil
+        end
+    end
+
+    sni = str_lower(sni)
+    return sni
+end
 
 
 local _aes_128_cbc_with_iv = false
@@ -95,7 +115,7 @@ local function aes_decrypt_pkey(origin)
 end
 
 
-function _M.validate(cert, key)
+local function validate(cert, key)
     local parsed_cert, err = ngx_ssl.parse_pem_cert(cert)
     if not parsed_cert then
         return nil, "failed to parse cert: " .. err
@@ -119,6 +139,7 @@ function _M.validate(cert, key)
     -- TODO: check if key & cert match
     return true
 end
+_M.validate = validate
 
 
 local function parse_pem_cert(sni, cert)
@@ -157,8 +178,50 @@ function _M.fetch_pkey(sni, pkey)
 end
 
 
-function _M.support_client_verification()
+local function support_client_verification()
     return ngx_ssl.verify_client ~= nil
+end
+_M.support_client_verification = support_client_verification
+
+
+function _M.check_ssl_conf(in_dp, conf)
+    if not in_dp then
+        local ok, err = core.schema.check(core.schema.ssl, conf)
+        if not ok then
+            return nil, "invalid configuration: " .. err
+        end
+    end
+
+    local ok, err = validate(conf.cert, conf.key)
+    if not ok then
+        return nil, err
+    end
+
+    local numcerts = conf.certs and #conf.certs or 0
+    local numkeys = conf.keys and #conf.keys or 0
+    if numcerts ~= numkeys then
+        return nil, "mismatched number of certs and keys"
+    end
+
+    for i = 1, numcerts do
+        local ok, err = validate(conf.certs[i], conf.keys[i])
+        if not ok then
+            return nil, "failed to handle cert-key pair[" .. i .. "]: " .. err
+        end
+    end
+
+    if conf.client then
+        if not support_client_verification() then
+            return nil, "client tls verify unsupported"
+        end
+
+        local ok, err = validate(conf.client.ca, nil)
+        if not ok then
+            return nil, "failed to validate client_cert: " .. err
+        end
+    end
+
+    return true
 end
 
 

@@ -52,10 +52,13 @@ qr/random seed \d+(\.\d+)?(e\+\d+)?\ntwice: false/
                 {addr = "127.0.0.1:90", host = "127.0.0.1", port = 90},
                 {addr = "www.test.com", host = "www.test.com"},
                 {addr = "www.test.com:90", host = "www.test.com", port = 90},
+                {addr = "localhost", host = "localhost"},
+                {addr = "localhost:90", host = "localhost", port = 90},
                 {addr = "[127.0.0.1:90", host = "[127.0.0.1:90"},
                 {addr = "[::1]", host = "[::1]"},
                 {addr = "[::1]:1234", host = "[::1]", port = 1234},
                 {addr = "[::1234:1234]:12345", host = "[::1234:1234]", port = 12345},
+                {addr = "::1", host = "::1"},
             }
             for _, case in ipairs(cases) do
                 local host, port = parse_addr(case.addr)
@@ -226,7 +229,8 @@ close: 1 nil}
                 me = "David",
             }
             for _, case in ipairs(cases) do
-                ngx.say("res:", resolve_var(case, ctx))
+                local res = resolve_var(case, ctx)
+                ngx.say("res:", res)
             end
         }
     }
@@ -318,3 +322,51 @@ GET /t
 --- error_log
 error: failed to query the DNS server
 --- timeout: 10
+
+
+
+=== TEST 10: test dns config with ipv6 enable
+--- yaml_config
+apisix:
+  enable_ipv6: true
+--- config
+    location /t {
+        content_by_lua_block {
+            local core = require("apisix.core")
+            local domain = "ipv6.local"
+            local ip_info, err = core.utils.dns_parse(domain)
+            if not ip_info then
+                core.log.error("failed to parse domain: ", domain, ", error: ",err)
+                return
+            end
+            ngx.say("ip_info: ", require("toolkit.json").encode(ip_info))
+        }
+    }
+--- request
+GET /t
+--- response_body
+ip_info: {"address":"[::1]","class":1,"name":"ipv6.local","ttl":315360000,"type":28}
+
+
+
+=== TEST 11: test dns config with ipv6 disable
+--- yaml_config
+apisix:
+  enable_ipv6: false
+--- config
+    location /t {
+        content_by_lua_block {
+            local core = require("apisix.core")
+            local domain = "ipv6.local"
+            local ip_info, err = core.utils.dns_parse(domain)
+            if not ip_info then
+                core.log.error("failed to parse domain: ", domain, ", error: ",err)
+                return
+            end
+            ngx.say("ip_info: ", require("toolkit.json").encode(ip_info))
+        }
+    }
+--- request
+GET /t
+--- error_log
+failed to parse domain: ipv6.local

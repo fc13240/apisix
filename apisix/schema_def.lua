@@ -111,6 +111,17 @@ local desc_def = {
 }
 
 
+local timeout_def = {
+    type = "object",
+    properties = {
+        connect = {type = "number", exclusiveMinimum = 0},
+        send = {type = "number", exclusiveMinimum = 0},
+        read = {type = "number", exclusiveMinimum = 0},
+    },
+    required = {"connect", "send", "read"},
+}
+
+
 local health_checker = {
     type = "object",
     properties = {
@@ -226,7 +237,7 @@ local health_checker = {
                         },
                         successes = {
                             type = "integer",
-                            minimum = 1,
+                            minimum = 0,
                             maximum = 254,
                             default = 5
                         }
@@ -248,28 +259,41 @@ local health_checker = {
                         },
                         tcp_failures = {
                             type = "integer",
-                            minimum = 1,
+                            minimum = 0,
                             maximum = 254,
                             default = 2
                         },
                         timeouts = {
                             type = "integer",
-                            minimum = 1,
+                            minimum = 0,
                             maximum = 254,
                             default = 7
                         },
                         http_failures = {
                             type = "integer",
-                            minimum = 1,
+                            minimum = 0,
                             maximum = 254,
                             default = 5
                         },
                     }
                 }
+            },
+            default = {
+                type = "http",
+                healthy = {
+                    http_statuses = { 200, 201, 202, 203, 204, 205, 206, 207, 208, 226,
+                                      300, 301, 302, 303, 304, 305, 306, 307, 308 },
+                    successes = 0,
+                },
+                unhealthy = {
+                    http_statuses = { 429, 500, 503 },
+                    tcp_failures = 0,
+                    timeouts = 0,
+                    http_failures = 0,
+                },
             }
         }
     },
-    additionalProperties = false,
     anyOf = {
         {required = {"active"}},
         {required = {"active", "passive"}},
@@ -320,6 +344,37 @@ local nodes_schema = {
         }
     }
 }
+_M.discovery_nodes = {
+    type = "array",
+    items = {
+        type = "object",
+        properties = {
+            host = {
+                description = "domain or ip",
+            },
+            port = {
+                description = "port of node",
+                type = "integer",
+                minimum = 1,
+            },
+            weight = {
+                description = "weight of node",
+                type = "integer",
+                minimum = 0,
+            },
+            priority = {
+                description = "priority of node",
+                type = "integer",
+            },
+            metadata = {
+                description = "metadata of node",
+                type = "object",
+            }
+        },
+        -- nodes from DNS discovery may not contain port
+        required = {"host", "weight"},
+    },
+}
 
 
 local certificate_scheme = {
@@ -342,15 +397,11 @@ local upstream_schema = {
             type = "integer",
             minimum = 0,
         },
-        timeout = {
-            type = "object",
-            properties = {
-                connect = {type = "number", exclusiveMinimum = 0},
-                send = {type = "number", exclusiveMinimum = 0},
-                read = {type = "number", exclusiveMinimum = 0},
-            },
-            required = {"connect", "send", "read"},
+        retry_timeout = {
+            type = "number",
+            minimum = 0,
         },
+        timeout = timeout_def,
         tls = {
             type = "object",
             properties = {
@@ -359,10 +410,29 @@ local upstream_schema = {
             },
             required = {"client_cert", "client_key"},
         },
+        keepalive_pool = {
+            type = "object",
+            properties = {
+                size = {
+                    type = "integer",
+                    default = 320,
+                    minimum = 1,
+                },
+                idle_timeout = {
+                    type = "number",
+                    default = 60,
+                    minimum = 0,
+                },
+                requests = {
+                    type = "integer",
+                    default = 1000,
+                    minimum = 1,
+                },
+            },
+        },
         type = {
             description = "algorithms of load balancing",
             type = "string",
-            enum = {"chash", "roundrobin", "ewma", "least_conn"}
         },
         checks = health_checker,
         hash_on = {
@@ -382,12 +452,28 @@ local upstream_schema = {
         },
         scheme = {
             default = "http",
-            enum = {"grpc", "grpcs", "http", "https"}
+            enum = {"grpc", "grpcs", "http", "https", "tcp", "tls", "udp"},
+            description = "The scheme of the upstream." ..
+                " For L7 proxy, it can be one of grpc/grpcs/http/https." ..
+                " For L4 proxy, it can be one of tcp/tls/udp."
         },
         labels = labels_def,
         discovery_type = {
             description = "discovery type",
             type = "string",
+        },
+        discovery_args = {
+            type = "object",
+            properties = {
+                namespace_id = {
+                    description = "namespace id",
+                    type = "string",
+                },
+                group_name = {
+                    description = "group name",
+                    type = "string",
+                },
+            }
         },
         pass_host = {
             description = "mod of host passing",
@@ -409,7 +495,6 @@ local upstream_schema = {
         {required = {"type", "nodes"}},
         {required = {"type", "service_name", "discovery_type"}},
     },
-    additionalProperties = false,
 }
 
 -- TODO: add more nginx variable support
@@ -482,6 +567,7 @@ _M.route = {
             minItems = 1,
             uniqueItems = true,
         },
+        timeout = timeout_def,
         vars = {
             type = "array",
         },
@@ -572,7 +658,6 @@ _M.route = {
             {required = {"script", "plugin_config_id"}},
         }
     },
-    additionalProperties = false,
 }
 
 
@@ -593,9 +678,13 @@ _M.service = {
             description = "enable websocket for request",
             type        = "boolean",
         },
-
+        hosts = {
+            type = "array",
+            items = host_def,
+            minItems = 1,
+            uniqueItems = true,
+        },
     },
-    additionalProperties = false,
 }
 
 
@@ -603,7 +692,7 @@ _M.consumer = {
     type = "object",
     properties = {
         username = {
-            type = "string", minLength = 1, maxLength = 32,
+            type = "string", minLength = 1, maxLength = rule_name_def.maxLength,
             pattern = [[^[a-zA-Z0-9_]+$]]
         },
         plugins = plugins_schema,
@@ -613,7 +702,6 @@ _M.consumer = {
         desc = desc_def,
     },
     required = {"username"},
-    additionalProperties = false,
 }
 
 
@@ -628,13 +716,13 @@ _M.ssl = {
         key = private_key_schema,
         sni = {
             type = "string",
-            pattern = [[^\*?[0-9a-zA-Z-.]+$]],
+            pattern = host_def_pat,
         },
         snis = {
             type = "array",
             items = {
                 type = "string",
-                pattern = [[^\*?[0-9a-zA-Z-.]+$]],
+                pattern = host_def_pat,
             },
             minItems = 1,
         },
@@ -678,7 +766,6 @@ _M.ssl = {
         {required = {"sni", "key", "cert"}},
         {required = {"snis", "key", "cert"}}
     },
-    additionalProperties = false,
 }
 
 
@@ -695,7 +782,6 @@ _M.proto = {
         }
     },
     required = {"content"},
-    additionalProperties = false,
 }
 
 
@@ -708,7 +794,6 @@ _M.global_rule = {
         update_time = timestamp_def
     },
     required = {"plugins"},
-    additionalProperties = false,
 }
 
 
@@ -729,6 +814,11 @@ _M.stream_route = {
             description = "server port",
             type = "integer",
         },
+        sni = {
+            description = "server name indication",
+            type = "string",
+            pattern = host_def_pat,
+        },
         upstream = upstream_schema,
         upstream_id = id_schema,
         plugins = plugins_schema,
@@ -748,7 +838,6 @@ _M.plugins = {
             stream = {
                 type = "boolean"
             },
-            additionalProperties = false,
         },
         required = {"name"}
     }
@@ -766,7 +855,6 @@ _M.plugin_config = {
         update_time = timestamp_def
     },
     required = {"id", "plugins"},
-    additionalProperties = false,
 }
 
 

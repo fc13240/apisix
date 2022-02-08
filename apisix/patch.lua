@@ -15,21 +15,28 @@
 -- limitations under the License.
 --
 local require = require
+require("resty.dns.resolver") -- preload dns resolver to prevent recursive patch
+local ipmatcher = require("resty.ipmatcher")
 local socket = require("socket")
 local unix_socket = require("socket.unix")
 local ssl = require("ssl")
+local ngx = ngx
 local get_phase = ngx.get_phase
 local ngx_socket = ngx.socket
 local original_tcp = ngx.socket.tcp
+local original_udp = ngx.socket.udp
 local concat_tab = table.concat
+local debug = debug
 local new_tab = require("table.new")
-local expr = require("resty.expr.v1")
 local log = ngx.log
 local WARN = ngx.WARN
 local ipairs = ipairs
 local select = select
 local setmetatable = setmetatable
+local string = string
+local table = table
 local type = type
+local tonumber = tonumber
 
 
 local config_local
@@ -42,6 +49,124 @@ local function get_local_conf()
     end
 
     return config_local.local_conf()
+end
+
+
+local patch_tcp_socket
+do
+    local old_tcp_sock_connect
+
+    local function new_tcp_sock_connect(sock, host, port, opts)
+        local core_str = require("apisix.core.string")
+        local resolver = require("apisix.core.resolver")
+
+        if host then
+            if core_str.has_prefix(host, "unix:") then
+                if not opts then
+                    -- workaround for https://github.com/openresty/lua-nginx-module/issues/860
+                    return old_tcp_sock_connect(sock, host)
+                end
+
+            elseif not ipmatcher.parse_ipv4(host) and not ipmatcher.parse_ipv6(host) then
+                local err
+                host, err = resolver.parse_domain(host)
+                if not host then
+                    return nil, "failed to parse domain: " .. err
+                end
+            end
+        end
+
+        return old_tcp_sock_connect(sock, host, port, opts)
+    end
+
+
+    function patch_tcp_socket(sock)
+        if not old_tcp_sock_connect then
+            old_tcp_sock_connect = sock.connect
+        end
+
+        sock.connect = new_tcp_sock_connect
+        return sock
+    end
+end
+
+
+do -- `math.randomseed` patch
+    -- `math.random` generates PRND(pseudo-random numbers) from the seed set by `math.randomseed`
+    -- Many module libraries use `ngx.time` and `ngx.worker.pid` to generate seeds which may
+    -- loss randomness in container env (where pids are identical, e.g. root pid is 1)
+    -- Kubernetes may launch multi instance with deployment RS at the same time, `ngx.time` may
+    -- get same return in the pods.
+    -- Therefore, this global patch enforce entire framework to use
+    -- the best-practice PRND generates.
+
+    local resty_random = require("resty.random")
+    local math_randomseed = math.randomseed
+    local seeded = {}
+
+    -- make linter happy
+    -- luacheck: ignore
+    math.randomseed = function()
+        local worker_pid = ngx.worker.pid()
+
+        -- check seed mark
+        if seeded[worker_pid] then
+            log(ngx.DEBUG, debug.traceback("Random seed has been inited", 2))
+            return
+        end
+
+        -- generate randomseed
+        -- chose 6 from APISIX's SIX, 256 ^ 6 should do the trick
+        -- it shouldn't be large than 16 to prevent overflow.
+        local random_bytes = resty_random.bytes(6)
+        local t = {}
+
+        for i = 1, #random_bytes do
+            t[i] = string.byte(random_bytes, i)
+        end
+
+        local s = table.concat(t)
+
+        math_randomseed(tonumber(s))
+        seeded[worker_pid] = true
+    end
+end -- do
+
+
+local patch_udp_socket
+do
+    local old_udp_sock_setpeername
+
+    local function new_udp_sock_setpeername(sock, host, port)
+        local core_str = require("apisix.core.string")
+        local resolver = require("apisix.core.resolver")
+
+        if host then
+            if core_str.has_prefix(host, "unix:") then
+                return old_udp_sock_setpeername(sock, host)
+            end
+
+            if not ipmatcher.parse_ipv4(host) and not ipmatcher.parse_ipv6(host) then
+                local err
+                host, err = resolver.parse_domain(host)
+                if not host then
+                    return nil, "failed to parse domain: " .. err
+                end
+            end
+        end
+
+        return old_udp_sock_setpeername(sock, host, port)
+    end
+
+
+    function patch_udp_socket(sock)
+        if not old_udp_sock_setpeername then
+            old_udp_sock_setpeername = sock.setpeername
+        end
+
+        sock.setpeername = new_udp_sock_setpeername
+        return sock
+    end
 end
 
 
@@ -228,40 +353,21 @@ local function luasocket_tcp()
 end
 
 
-local patched_expr_new
-do
-    local function eval_empty_rule(self, ctx, ...)
-        return true
-    end
-
-
-    local mt = {__index = {eval = eval_empty_rule}}
-    local old_expr_new = expr.new
-
-
-    function patched_expr_new(rule)
-        if #rule == 0 then
-            return setmetatable({}, mt)
-        end
-
-        return old_expr_new(rule)
-    end
-end
-
-
 function _M.patch()
     -- make linter happy
     -- luacheck: ignore
     ngx_socket.tcp = function ()
         local phase = get_phase()
         if phase ~= "init" and phase ~= "init_worker" then
-            return original_tcp()
+            return patch_tcp_socket(original_tcp())
         end
 
         return luasocket_tcp()
     end
 
-    expr.new = patched_expr_new
+    ngx_socket.udp = function ()
+        return patch_udp_socket(original_udp())
+    end
 end
 
 

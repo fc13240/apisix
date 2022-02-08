@@ -18,12 +18,12 @@ local ver = require("apisix.core.version")
 local etcd = require("apisix.cli.etcd")
 local util = require("apisix.cli.util")
 local file = require("apisix.cli.file")
+local schema = require("apisix.cli.schema")
 local ngx_tpl = require("apisix.cli.ngx_tpl")
 local profile = require("apisix.core.profile")
 local template = require("resty.template")
 local argparse = require("argparse")
 local pl_path = require("pl.path")
-local jsonschema = require("jsonschema")
 
 local stderr = io.stderr
 local ipairs = ipairs
@@ -33,8 +33,8 @@ local type = type
 local tostring = tostring
 local tonumber = tonumber
 local io_open = io.open
-local popen = io.popen
 local execute = os.execute
+local os_rename = os.rename
 local table_insert = table.insert
 local getenv = os.getenv
 local max = math.max
@@ -42,7 +42,7 @@ local floor = math.floor
 local str_find = string.find
 local str_byte = string.byte
 local str_sub = string.sub
-
+local str_format = string.format
 
 local _M = {}
 
@@ -56,6 +56,7 @@ init:       initialize the local nginx.conf
 init_etcd:  initialize the data of etcd
 start:      start the apisix server
 stop:       stop the apisix server
+quit:       stop the apisix server gracefully
 restart:    restart the apisix server
 reload:     reload the apisix server
 version:    print the version of apisix
@@ -63,7 +64,7 @@ version:    print the version of apisix
 end
 
 
-local function check_version(cur_ver_s, need_ver_s)
+local function version_greater_equal(cur_ver_s, need_ver_s)
     local cur_vers = util.split(cur_ver_s, [[.]])
     local need_vers = util.split(need_ver_s, [[.]])
     local len = max(#cur_vers, #need_vers)
@@ -145,141 +146,6 @@ local function get_lua_path(conf)
 end
 
 
-local config_schema = {
-    type = "object",
-    properties = {
-        apisix = {
-            properties = {
-                config_center = {
-                    enum = {"etcd", "yaml"},
-                },
-                proxy_protocol = {
-                    type = "object",
-                    properties = {
-                        listen_http_port = {
-                            type = "integer",
-                        },
-                        listen_https_port = {
-                            type = "integer",
-                        },
-                        enable_tcp_pp = {
-                            type = "boolean",
-                        },
-                        enable_tcp_pp_to_upstream = {
-                            type = "boolean",
-                        },
-                    }
-                },
-                port_admin = {
-                    type = "integer",
-                },
-                https_admin = {
-                    type = "boolean",
-                },
-                stream_proxy = {
-                    type = "object",
-                    properties = {
-                        tcp = {
-                            type = "array",
-                            minItems = 1,
-                            items = {
-                                anyOf = {
-                                    {
-                                        type = "integer",
-                                    },
-                                    {
-                                        type = "string",
-                                    },
-                                },
-                            },
-                            uniqueItems = true,
-                        },
-                        udp = {
-                            type = "array",
-                            minItems = 1,
-                            items = {
-                                anyOf = {
-                                    {
-                                        type = "integer",
-                                    },
-                                    {
-                                        type = "string",
-                                    },
-                                },
-                            },
-                            uniqueItems = true,
-                        },
-                    }
-                },
-                dns_resolver = {
-                    type = "array",
-                    minItems = 1,
-                    items = {
-                        type = "string",
-                    }
-                },
-                dns_resolver_valid = {
-                    type = "integer",
-                },
-                ssl = {
-                    type = "object",
-                    properties = {
-                        ssl_trusted_certificate = {
-                            type = "string",
-                        }
-                    }
-                },
-            }
-        },
-        nginx_config = {
-            type = "object",
-            properties = {
-                envs = {
-                    type = "array",
-                    minItems = 1,
-                    items = {
-                        type = "string",
-                    }
-                }
-            },
-        },
-        http = {
-            type = "object",
-            properties = {
-                lua_shared_dicts = {
-                    type = "object",
-                }
-            }
-        },
-        etcd = {
-            type = "object",
-            properties = {
-                resync_delay = {
-                    type = "integer",
-                },
-                user = {
-                    type = "string",
-                },
-                password = {
-                    type = "string",
-                },
-                tls = {
-                    type = "object",
-                    properties = {
-                        cert = {
-                            type = "string",
-                        },
-                        key = {
-                            type = "string",
-                        },
-                    }
-                }
-            }
-        }
-    }
-}
-
-
 local function init(env)
     if env.is_root_path then
         print('Warning! Running apisix under /root is only suitable for '
@@ -288,16 +154,23 @@ local function init(env)
               .. 'other than /root.')
     end
 
+    local min_ulimit = 1024
+    if env.ulimit <= min_ulimit then
+        print(str_format("Warning! Current maximum number of open file "
+                .. "descriptors [%d] is not greater than %d, please increase user limits by "
+                .. "execute \'ulimit -n <new user limits>\' , otherwise the performance"
+                .. " is low.", env.ulimit, min_ulimit))
+    end
+
     -- read_yaml_conf
     local yaml_conf, err = file.read_yaml_conf(env.apisix_home)
     if not yaml_conf then
         util.die("failed to read local yaml config of apisix: ", err, "\n")
     end
 
-    local validator = jsonschema.generate_validator(config_schema)
-    local ok, err = validator(yaml_conf)
+    local ok, err = schema.validate(yaml_conf)
     if not ok then
-        util.die("failed to validate config: ", err, "\n")
+        util.die(err, "\n")
     end
 
     -- check the Admin API token
@@ -354,9 +227,14 @@ Please modify "admin_key" in conf/config.yaml .
         util.die("can not find openresty\n")
     end
 
-    local need_ver = "1.17.3"
-    if not check_version(or_ver, need_ver) then
+    local need_ver = "1.17.8"
+    if not version_greater_equal(or_ver, need_ver) then
         util.die("openresty version must >=", need_ver, " current ", or_ver, "\n")
+    end
+
+    local use_openresty_1_17 = false
+    if not version_greater_equal(or_ver, "1.19.3") then
+        use_openresty_1_17 = true
     end
 
     local or_info = util.execute_cmd("openresty -V 2>&1")
@@ -368,6 +246,11 @@ Please modify "admin_key" in conf/config.yaml .
         with_module_status = false
     end
 
+    local use_apisix_openresty = true
+    if or_info and not or_info:find("apisix-nginx-module", 1, true) then
+        use_apisix_openresty = false
+    end
+
     local enabled_plugins = {}
     for i, name in ipairs(yaml_conf.plugins) do
         enabled_plugins[name] = true
@@ -377,26 +260,222 @@ Please modify "admin_key" in conf/config.yaml .
         util.die("missing apisix.proxy_cache for plugin proxy-cache\n")
     end
 
-    -- support multiple ports listen, compatible with the original style
-    if type(yaml_conf.apisix.node_listen) == "number" then
-        local node_listen = {{port = yaml_conf.apisix.node_listen}}
-        yaml_conf.apisix.node_listen = node_listen
-    elseif type(yaml_conf.apisix.node_listen) == "table" then
-        local node_listen = {}
-        for index, value in ipairs(yaml_conf.apisix.node_listen) do
-            if type(value) == "number" then
-                table_insert(node_listen, index, {port = value})
-            elseif type(value) == "table" then
-                table_insert(node_listen, index, value)
+    if enabled_plugins["batch-requests"] then
+        local pass_real_client_ip = false
+        local real_ip_from = yaml_conf.nginx_config.http.real_ip_from
+        -- the real_ip_from is enabled by default, we just need to make sure it's
+        -- not disabled by the users
+        if real_ip_from then
+            for _, ip in ipairs(real_ip_from) do
+                -- TODO: handle cidr
+                if ip == "127.0.0.1" or ip == "0.0.0.0/0" then
+                    pass_real_client_ip = true
+                end
             end
         end
-        yaml_conf.apisix.node_listen = node_listen
+
+        if not pass_real_client_ip then
+            util.die("missing '127.0.0.1' in the nginx_config.http.real_ip_from for plugin " ..
+                     "batch-requests\n")
+        end
     end
 
-    if type(yaml_conf.apisix.ssl.listen_port) == "number" then
-        local listen_port = {yaml_conf.apisix.ssl.listen_port}
-        yaml_conf.apisix.ssl.listen_port = listen_port
+    local ports_to_check = {}
+
+    -- listen in admin use a separate port, support specific IP, compatible with the original style
+    local admin_server_addr
+    if yaml_conf.apisix.enable_admin then
+        if yaml_conf.apisix.admin_listen or yaml_conf.apisix.port_admin then
+            local ip = "0.0.0.0"
+            local port = yaml_conf.apisix.port_admin or 9180
+
+            if yaml_conf.apisix.admin_listen then
+                ip = yaml_conf.apisix.admin_listen.ip or ip
+                port = tonumber(yaml_conf.apisix.admin_listen.port) or port
+            end
+
+            if ports_to_check[port] ~= nil then
+                util.die("admin port ", port, " conflicts with ", ports_to_check[port], "\n")
+            end
+
+            admin_server_addr = ip .. ":" .. port
+            ports_to_check[port] = "admin"
+        end
     end
+
+    local control_server_addr
+    if yaml_conf.apisix.enable_control then
+        if not yaml_conf.apisix.control then
+            if ports_to_check[9090] ~= nil then
+                util.die("control port 9090 conflicts with ", ports_to_check[9090], "\n")
+            end
+            control_server_addr = "127.0.0.1:9090"
+            ports_to_check[9090] = "control"
+        else
+            local ip = yaml_conf.apisix.control.ip
+            local port = tonumber(yaml_conf.apisix.control.port)
+
+            if ip == nil then
+                ip = "127.0.0.1"
+            end
+
+            if not port then
+                port = 9090
+            end
+
+            if ports_to_check[port] ~= nil then
+                util.die("control port ", port, " conflicts with ", ports_to_check[port], "\n")
+            end
+
+            control_server_addr = ip .. ":" .. port
+            ports_to_check[port] = "control"
+        end
+    end
+
+    local prometheus_server_addr
+    if yaml_conf.plugin_attr.prometheus then
+        local prometheus = yaml_conf.plugin_attr.prometheus
+        if prometheus.enable_export_server then
+            local ip = prometheus.export_addr.ip
+            local port = tonumber(prometheus.export_addr.port)
+
+            if ip == nil then
+                ip = "127.0.0.1"
+            end
+
+            if not port then
+                port = 9091
+            end
+
+            if ports_to_check[port] ~= nil then
+                util.die("prometheus port ", port, " conflicts with ", ports_to_check[port], "\n")
+            end
+
+            prometheus_server_addr = ip .. ":" .. port
+            ports_to_check[port] = "prometheus"
+        end
+    end
+
+    local ip_port_to_check = {}
+
+    local function listen_table_insert(listen_table, scheme, ip, port, enable_http2, enable_ipv6)
+        if type(ip) ~= "string" then
+            util.die(scheme, " listen ip format error, must be string", "\n")
+        end
+
+        if type(port) ~= "number" then
+            util.die(scheme, " listen port format error, must be number", "\n")
+        end
+
+        if ports_to_check[port] ~= nil then
+            util.die(scheme, " listen port ", port, " conflicts with ",
+                ports_to_check[port], "\n")
+        end
+
+        local addr = ip .. ":" .. port
+
+        if ip_port_to_check[addr] == nil then
+            table_insert(listen_table,
+                    {ip = ip, port = port, enable_http2 = enable_http2})
+            ip_port_to_check[addr] = scheme
+        end
+
+        if enable_ipv6 then
+            ip = "[::]"
+            addr = ip .. ":" .. port
+
+            if ip_port_to_check[addr] == nil then
+                table_insert(listen_table,
+                        {ip = ip, port = port, enable_http2 = enable_http2})
+                ip_port_to_check[addr] = scheme
+            end
+        end
+    end
+
+    local node_listen = {}
+    -- listen in http, support multiple ports and specific IP, compatible with the original style
+    if type(yaml_conf.apisix.node_listen) == "number" then
+        listen_table_insert(node_listen, "http", "0.0.0.0", yaml_conf.apisix.node_listen,
+                false, yaml_conf.apisix.enable_ipv6)
+    elseif type(yaml_conf.apisix.node_listen) == "table" then
+        for _, value in ipairs(yaml_conf.apisix.node_listen) do
+            if type(value) == "number" then
+                listen_table_insert(node_listen, "http", "0.0.0.0", value,
+                        false, yaml_conf.apisix.enable_ipv6)
+            elseif type(value) == "table" then
+                local ip = value.ip
+                local port = value.port
+                local enable_ipv6 = false
+                local enable_http2 = value.enable_http2
+
+                if ip == nil then
+                    ip = "0.0.0.0"
+                    if yaml_conf.apisix.enable_ipv6 then
+                        enable_ipv6 = true
+                    end
+                end
+
+                if port == nil then
+                    port = 9080
+                end
+
+                if enable_http2 == nil then
+                    enable_http2 = false
+                end
+
+                listen_table_insert(node_listen, "http", ip, port,
+                        enable_http2, enable_ipv6)
+            end
+        end
+    end
+    yaml_conf.apisix.node_listen = node_listen
+
+    local ssl_listen = {}
+    -- listen in https, support multiple ports, support specific IP
+    for _, value in ipairs(yaml_conf.apisix.ssl.listen) do
+        if type(value) == "number" then
+            listen_table_insert(ssl_listen, "https", "0.0.0.0", value,
+                    yaml_conf.apisix.ssl.enable_http2, yaml_conf.apisix.enable_ipv6)
+        elseif type(value) == "table" then
+            local ip = value.ip
+            local port = value.port
+            local enable_ipv6 = false
+            local enable_http2 = (value.enable_http2 or yaml_conf.apisix.ssl.enable_http2)
+
+            if ip == nil then
+                ip = "0.0.0.0"
+                if yaml_conf.apisix.enable_ipv6 then
+                    enable_ipv6 = true
+                end
+            end
+
+            if port == nil then
+                port = 9443
+            end
+
+            if enable_http2 == nil then
+                enable_http2 = false
+            end
+
+            listen_table_insert(ssl_listen, "https", ip, port,
+                    enable_http2, enable_ipv6)
+        end
+    end
+
+    -- listen in https, compatible with the original style
+    if type(yaml_conf.apisix.ssl.listen_port) == "number" then
+        listen_table_insert(ssl_listen, "https", "0.0.0.0", yaml_conf.apisix.ssl.listen_port,
+                yaml_conf.apisix.ssl.enable_http2, yaml_conf.apisix.enable_ipv6)
+    elseif type(yaml_conf.apisix.ssl.listen_port) == "table" then
+        for _, value in ipairs(yaml_conf.apisix.ssl.listen_port) do
+            if type(value) == "number" then
+                listen_table_insert(ssl_listen, "https", "0.0.0.0", value,
+                        yaml_conf.apisix.ssl.enable_http2, yaml_conf.apisix.enable_ipv6)
+            end
+        end
+    end
+
+    yaml_conf.apisix.ssl.listen = ssl_listen
 
     if yaml_conf.apisix.ssl.ssl_trusted_certificate ~= nil then
         local cert_path = yaml_conf.apisix.ssl.ssl_trusted_certificate
@@ -428,6 +507,21 @@ Please modify "admin_key" in conf/config.yaml .
     yaml_conf.apisix.ssl.ssl_cert = "cert/ssl_PLACE_HOLDER.crt"
     yaml_conf.apisix.ssl.ssl_cert_key = "cert/ssl_PLACE_HOLDER.key"
 
+    local tcp_enable_ssl
+    -- compatible with the original style which only has the addr
+    if yaml_conf.apisix.stream_proxy and yaml_conf.apisix.stream_proxy.tcp then
+        local tcp = yaml_conf.apisix.stream_proxy.tcp
+        for i, item in ipairs(tcp) do
+            if type(item) ~= "table" then
+                tcp[i] = {addr = item}
+            else
+                if item.tls then
+                    tcp_enable_ssl = true
+                end
+            end
+        end
+    end
+
     local dubbo_upstream_multiplex_count = 32
     if yaml_conf.plugin_attr and yaml_conf.plugin_attr["dubbo-proxy"] then
         local dubbo_conf = yaml_conf.plugin_attr["dubbo-proxy"]
@@ -444,14 +538,20 @@ Please modify "admin_key" in conf/config.yaml .
 
     -- Using template.render
     local sys_conf = {
+        use_openresty_1_17 = use_openresty_1_17,
         lua_path = env.pkg_path_org,
         lua_cpath = env.pkg_cpath_org,
         os_name = util.trim(util.execute_cmd("uname")),
         apisix_lua_home = env.apisix_home,
         with_module_status = with_module_status,
+        use_apisix_openresty = use_apisix_openresty,
         error_log = {level = "warn"},
         enabled_plugins = enabled_plugins,
         dubbo_upstream_multiplex_count = dubbo_upstream_multiplex_count,
+        tcp_enable_ssl = tcp_enable_ssl,
+        admin_server_addr = admin_server_addr,
+        control_server_addr = control_server_addr,
+        prometheus_server_addr = prometheus_server_addr,
     }
 
     if not yaml_conf.apisix then
@@ -474,43 +574,8 @@ Please modify "admin_key" in conf/config.yaml .
     for k,v in pairs(yaml_conf.nginx_config) do
         sys_conf[k] = v
     end
+    sys_conf["wasm"] = yaml_conf.wasm
 
-    if yaml_conf.apisix.enable_control then
-        if not yaml_conf.apisix.control then
-            sys_conf.control_server_addr = "127.0.0.1:9090"
-        else
-            local ip = yaml_conf.apisix.control.ip
-            local port = tonumber(yaml_conf.apisix.control.port)
-
-            if ip == nil then
-                ip = "127.0.0.1"
-            end
-
-            if not port then
-                port = 9090
-            end
-
-            sys_conf.control_server_addr = ip .. ":" .. port
-        end
-    end
-
-    if yaml_conf.plugin_attr.prometheus then
-        local prometheus = yaml_conf.plugin_attr.prometheus
-        if prometheus.enable_export_server then
-            local ip = prometheus.export_addr.ip
-            local port = tonumber(prometheus.export_addr.port)
-
-            if ip == nil then
-                ip = "127.0.0.1"
-            end
-
-            if not port then
-                port = 9091
-            end
-
-            sys_conf.prometheus_server_addr = ip .. ":" .. port
-        end
-    end
 
     local wrn = sys_conf["worker_rlimit_nofile"]
     local wc = sys_conf["event"]["worker_connections"]
@@ -545,9 +610,24 @@ Please modify "admin_key" in conf/config.yaml .
         sys_conf["dns_resolver"] = dns_addrs
     end
 
+    for i, r in ipairs(sys_conf["dns_resolver"]) do
+        if r:match(":[^:]*:") then
+            -- more than one colon, is IPv6
+            if r:byte(1) ~= str_byte('[') then
+                -- ensure IPv6 address is always wrapped in []
+                sys_conf["dns_resolver"][i] = "[" .. r .. "]"
+            end
+        end
+    end
+
     local env_worker_processes = getenv("APISIX_WORKER_PROCESSES")
     if env_worker_processes then
         sys_conf["worker_processes"] = floor(tonumber(env_worker_processes))
+    end
+
+    if sys_conf["http"]["lua_shared_dicts"] then
+        stderr:write("lua_shared_dicts is deprecated, " ..
+                     "use custom_lua_shared_dict instead\n")
     end
 
     local exported_vars = file.get_exported_vars()
@@ -611,11 +691,10 @@ local function start(env, ...)
     pid = tonumber(pid)
     if pid then
         local lsof_cmd = "lsof -p " .. pid
-        local hd = popen(lsof_cmd)
-        local res = hd:read("*a")
+        local res, err = util.execute_cmd(lsof_cmd)
         if not (res and res == "") then
             if not res then
-                print("failed to read the result of command: " .. lsof_cmd)
+                print(err)
             else
                 print("APISIX is running...")
             end
@@ -638,8 +717,18 @@ local function start(env, ...)
     if customized_yaml then
         profile.apisix_home = env.apisix_home .. "/"
         local local_conf_path = profile:yaml_path("config")
-        util.execute_cmd("mv " .. local_conf_path .. " " .. local_conf_path .. ".bak")
-        util.execute_cmd("ln " .. customized_yaml .. " " .. local_conf_path)
+
+        local err = util.execute_cmd_with_error("mv " .. local_conf_path .. " "
+                                                .. local_conf_path .. ".bak")
+        if #err > 0 then
+            util.die("failed to mv config to backup, error: ", err)
+        end
+        err = util.execute_cmd_with_error("ln " .. customized_yaml .. " " .. local_conf_path)
+        if #err > 0 then
+            util.execute_cmd("mv " .. local_conf_path .. ".bak " .. local_conf_path)
+            util.die("failed to link customized config, error: ", err)
+        end
+
         print("Use customized yaml: ", customized_yaml)
     end
 
@@ -650,19 +739,78 @@ local function start(env, ...)
 end
 
 
-local function stop(env)
+local function cleanup()
     local local_conf_path = profile:yaml_path("config")
     local bak_exist = io_open(local_conf_path .. ".bak")
     if bak_exist then
-        util.execute_cmd("rm " .. local_conf_path)
-        util.execute_cmd("mv " .. local_conf_path .. ".bak " .. local_conf_path)
+        local err = util.execute_cmd_with_error("rm " .. local_conf_path)
+        if #err > 0 then
+            print("failed to remove customized config, error: ", err)
+        end
+        err = util.execute_cmd_with_error("mv " .. local_conf_path .. ".bak " .. local_conf_path)
+        if #err > 0 then
+            util.die("failed to mv original config file, error: ", err)
+        end
     end
+end
+
+
+local function test(env, backup_ngx_conf)
+    -- backup nginx.conf
+    local ngx_conf_path = env.apisix_home .. "/conf/nginx.conf"
+    local ngx_conf_exist = util.is_file_exist(ngx_conf_path)
+    if ngx_conf_exist then
+        local ok, err = os_rename(ngx_conf_path, ngx_conf_path .. ".bak")
+        if not ok then
+            util.die("failed to backup nginx.conf, error: ", err)
+        end
+    end
+
+    -- reinit nginx.conf
+    init(env)
+
+    local test_cmd = env.openresty_args .. [[ -t -q ]]
+    local test_ret = execute((test_cmd))
+
+    -- restore nginx.conf
+    if ngx_conf_exist then
+        local ok, err = os_rename(ngx_conf_path .. ".bak", ngx_conf_path)
+        if not ok then
+            util.die("failed to restore original nginx.conf, error: ", err)
+        end
+    end
+
+    -- When success,
+    -- On linux, os.execute returns 0,
+    -- On macos, os.execute returns 3 values: true, exit, 0, and we need the first.
+    if (test_ret == 0 or test_ret == true) then
+        print("configuration test is successful")
+        return
+    end
+
+    util.die("configuration test failed")
+end
+
+
+local function quit(env)
+    cleanup()
+
+    local cmd = env.openresty_args .. [[ -s quit]]
+    util.execute_cmd(cmd)
+end
+
+
+local function stop(env)
+    cleanup()
+
     local cmd = env.openresty_args .. [[ -s stop]]
     util.execute_cmd(cmd)
 end
 
 
 local function restart(env)
+  -- test configuration
+  test(env)
   stop(env)
   start(env)
 end
@@ -695,8 +843,10 @@ local action = {
     init_etcd = etcd.init,
     start = start,
     stop = stop,
+    quit = quit,
     restart = restart,
     reload = reload,
+    test = test,
 }
 
 
